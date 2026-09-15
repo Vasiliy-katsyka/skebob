@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>SKEBOB // NON-EUCLIDEAN TOPOLOGY</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+    }
+    body, html {
+      width: 100%;
+      height: 100%;
+      background-color: #000000;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+      touch-action: none;
+    }
+    canvas#webgl {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+      display: block;
+    }
+    /* Minimal HUD */
+    .hud {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      z-index: 10;
+      color: #ffffff;
+      pointer-events: none;
+    }
+    .hud h1 {
+      font-size: 13px;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      font-weight: 800;
+    }
+    .hud p {
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      color: #777777;
+      margin-top: 4px;
+    }
+    /* Return Button */
+    .back-btn {
+      position: absolute;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%) translateY(20px);
+      z-index: 20;
+      background: #ffffff;
+      color: #000000;
+      border: none;
+      padding: 12px 26px;
+      border-radius: 999px;
+      font-family: monospace;
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      cursor: pointer;
+      opacity: 0;
+      pointer-events: none;
+      box-shadow: 0 0 25px rgba(255, 255, 255, 0.45);
+      transition: opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1), 
+                  transform 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+                  background 0.2s;
+    }
+    .back-btn.visible {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateX(-50%) translateY(0);
+    }
+    .back-btn:hover {
+      background: #e0e0e0;
+    }
+    .back-btn:active {
+      transform: translateX(-50%) scale(0.96);
+    }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+  <div class="hud">
+    <h1>SKEBOB // MULTIVERSE</h1>
+    <p>Drag to fly &bull; Zoom or pinch to explore &bull; Tap to snap</p>
+  </div>
+  <button class="back-btn" id="backBtn">&larr; Return to Warp</button>
+  <canvas id="webgl"></canvas>
+
+  <script>
+    // --- Three.js & Engine Setup ---
+    const canvas = document.querySelector('#webgl');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000);
+
+    const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, -22, 28);
+    camera.lookAt(0, 0, 0);
+
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      powerPreference: "high-performance"
+    });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+    // Shared Shader Uniforms
+    const uniforms = {
+      uTime: { value: 0.0 },
+      uWaveHeight: { value: 1.9 },
+      uWaveFreq: { value: 0.15 },
+      uFocusIndex: { value: -1.0 },
+      uFlattenProgress: { value: 0.0 }
+    };
+
+    // Shared GLSL Wave Function
+    const waveFunctionGLSL = `
+      uniform float uTime;
+      uniform float uWaveHeight;
+      uniform float uWaveFreq;
+      
+      float getWave(vec2 pos) {
+        float w1 = sin(pos.x * uWaveFreq + uTime * 0.75) * cos(pos.y * uWaveFreq * 0.8 + uTime * 0.55);
+        float w2 = sin((pos.x + pos.y) * uWaveFreq * 0.6 + uTime * 0.4) * 0.5;
+        return (w1 + w2) * uWaveHeight;
+      }
+    `;
+
+    // --- 1. Infinite Non-Euclidean Grid ---
+    const gridGeo = new THREE.PlaneGeometry(240, 240, 200, 200);
+    const gridMat = new THREE.ShaderMaterial({
+      uniforms: uniforms,
+      vertexShader: `
+        ${waveFunctionGLSL}
+        varying vec3 vWorldPos;
+        void main() {
+          vec3 pos = position;
+          pos.z += getWave(pos.xy);
+          vWorldPos = pos;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vWorldPos;
+        void main() {
+          vec2 grid = abs(fract(vWorldPos.xy * 0.35 - 0.5) - 0.5) / fwidth(vWorldPos.xy * 0.35);
+          float line = min(grid.x, grid.y);
+          float c = 1.0 - min(line, 1.0);
+
+          float dist = length(vWorldPos.xy);
+          float alpha = smoothstep(110.0, 30.0, dist) * c * 0.6;
+          gl_FragColor = vec4(vec3(1.0), alpha);
+        }
+      `,
+      transparent: true
+    });
+    const gridMesh = new THREE.Mesh(gridGeo, gridMat);
+    scene.add(gridMesh);
+
+    // --- 2. Canvas Texture Helper for Titles ---
+    function makeTextTexture(title, desc) {
+      const cvs = document.createElement('canvas');
+      cvs.width = 1024;
+      cvs.height = 256;
+      const ctx = cvs.getContext('2d');
+      ctx.clearRect(0, 0, cvs.width, cvs.height);
+
+      // Title
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "900 48px monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(title.toUpperCase(), 512, 85);
+
+      // Description
+      ctx.fillStyle = "#8e8e93";
+      ctx.font = "500 30px monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(desc, 512, 160);
+
+      const tex = new THREE.CanvasTexture(cvs);
+      tex.needsUpdate = true;
+      return tex;
+    }
+
+    // --- 3. Scatter Logic & Initialization ---
+    const interactiveObjects = [];
+    const cardData = [];
+    const cardGroup = new THREE.Group();
+    scene.add(cardGroup);
+
+    const texLoader = new THREE.TextureLoader();
+
+    // Spiral/organic scatter distribution helper
+    function getOrganicPositions(count, minDistance = 14.5) {
+      const positions = [{ x: 0, y: 0, scale: 2.4, isHero: true }];
+      let currentRadius = 16.0;
+      let angle = 0;
+
+      for (let i = 1; i < count; i++) {
+        let placed = false;
+        let attempts = 0;
+        while (!placed && attempts < 200) {
+          attempts++;
+          angle += 0.85 + (Math.random() * 0.25);
+          currentRadius += 0.55;
+          const jitter = (Math.random() - 0.5) * 4.0;
+          const x = Math.cos(angle) * (currentRadius + jitter);
+          const y = Math.sin(angle) * (currentRadius + jitter);
+
+          // Check distance against already placed items
+          const tooClose = positions.some(p => Math.hypot(p.x - x, p.y - y) < minDistance);
+          if (!tooClose) {
+            positions.push({
+              x,
+              y,
+              scale: 0.95 + Math.random() * 0.45,
+              rot: (Math.random() - 0.5) * 0.18,
+              isHero: false
+            });
+            placed = true;
+          }
+        }
+      }
+      return positions;
+    }
+
+    // Fetch list.json
+    fetch('list.json')
+      .then(res => res.json())
+      .then(data => initGallery(data))
+      .catch(err => console.error("Error loading list.json:", err));
+
+    function initGallery(items) {
+      // Find original-skebob.jpg to place as Hero
+      let heroIndex = items.findIndex(item => item.src.includes('original-skebob.jpg'));
+      if (heroIndex > -1) {
+        const [hero] = items.splice(heroIndex, 1);
+        items.unshift(hero);
+      }
+
+      const positions = getOrganicPositions(items.length);
+
+      items.forEach((item, index) => {
+        const pos = positions[index];
+        const baseW = 5.2 * pos.scale;
+        const baseH = 5.2 * pos.scale;
+
+        // Card Mesh
+        const cardGeo = new THREE.PlaneGeometry(baseW, baseH, 32, 32);
+        const texture = texLoader.load(item.src);
+
+        const cardMat = new THREE.ShaderMaterial({
+          uniforms: {
+            ...uniforms,
+            uTexture: { value: texture },
+            uIndex: { value: index }
+          },
+          vertexShader: `
+            ${waveFunctionGLSL}
+            uniform float uIndex;
+            uniform float uFocusIndex;
+            uniform float uFlattenProgress;
+            varying vec2 vUv;
+
+            void main() {
+              vUv = uv;
+              vec3 pos = position;
+              vec4 worldPos = modelMatrix * vec4(pos, 1.0);
+
+              float waveZ = getWave(worldPos.xy);
+              if (abs(uIndex - uFocusIndex) < 0.1) {
+                waveZ = mix(waveZ, 0.0, uFlattenProgress);
+              }
+
+              worldPos.z += waveZ + 0.06;
+              gl_Position = projectionMatrix * viewMatrix * worldPos;
+            }
+          `,
+          fragmentShader: `
+            uniform sampler2D uTexture;
+            varying vec2 vUv;
+            void main() {
+              vec4 tex = texture2D(uTexture, vUv);
+              float border = step(0.012, vUv.x) * step(0.012, vUv.y) * 
+                             step(vUv.x, 0.988) * step(vUv.y, 0.988);
+              vec3 col = mix(vec3(1.0), tex.rgb, border);
+              gl_FragColor = vec4(col, 1.0);
+            }
+          `,
+          side: THREE.DoubleSide
+        });
+
+        const cardMesh = new THREE.Mesh(cardGeo, cardMat);
+        cardMesh.position.set(pos.x, pos.y, 0);
+        if (pos.rot) cardMesh.rotation.z = pos.rot;
+        cardMesh.userData = { index, x: pos.x, y: pos.y, scale: pos.scale, item };
+        cardGroup.add(cardMesh);
+        interactiveObjects.push(cardMesh);
+
+        // Subtitle Mesh
+        const textH = 1.35 * pos.scale;
+        const textGeo = new THREE.PlaneGeometry(baseW * 1.3, textH, 24, 8);
+        const textTex = makeTextTexture(item.title || "Skebob", item.description || "");
+
+        const textMat = new THREE.ShaderMaterial({
+          uniforms: {
+            ...uniforms,
+            uTexture: { value: textTex },
+            uIndex: { value: index }
+          },
+          vertexShader: `
+            ${waveFunctionGLSL}
+            uniform float uIndex;
+            uniform float uFocusIndex;
+            uniform float uFlattenProgress;
+            varying vec2 vUv;
+
+            void main() {
+              vUv = uv;
+              vec3 pos = position;
+              vec4 worldPos = modelMatrix * vec4(pos, 1.0);
+
+              float waveZ = getWave(worldPos.xy);
+              if (abs(uIndex - uFocusIndex) < 0.1) {
+                waveZ = mix(waveZ, 0.0, uFlattenProgress);
+              }
+
+              worldPos.z += waveZ + 0.08;
+              gl_Position = projectionMatrix * viewMatrix * worldPos;
+            }
+          `,
+          fragmentShader: `
+            uniform sampler2D uTexture;
+            varying vec2 vUv;
+            void main() {
+              gl_FragColor = texture2D(uTexture, vUv);
+            }
+          `,
+          transparent: true,
+          side: THREE.DoubleSide
+        });
+
+        const textMesh = new THREE.Mesh(textGeo, textMat);
+        const yOffset = -(baseH * 0.5 + textH * 0.65);
+        textMesh.position.set(pos.x, pos.y + yOffset, 0);
+        if (pos.rot) textMesh.rotation.z = pos.rot;
+        textMesh.userData = { index, x: pos.x, y: pos.y, scale: pos.scale, item };
+        cardGroup.add(textMesh);
+        interactiveObjects.push(textMesh);
+
+        cardData.push({ x: pos.x, y: pos.y, scale: pos.scale });
+      });
+    }
+
+    // --- 4. Controls & Touch Navigation Rig ---
+    let isDragging = false;
+    let dragStartPos = { x: 0, y: 0 };
+    let prevPointer = { x: 0, y: 0 };
+    let targetPan = { x: 0, y: 0 };
+    let panOffset = { x: 0, y: 0 };
+    
+    let targetZoom = 30.0;
+    let zoom = 30.0;
+    let initialPinchDist = null;
+
+    let focusedIndex = -1;
+    let focusProgress = 0.0;
+    const backBtn = document.getElementById('backBtn');
+
+    // Desktop Mouse Events
+    window.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      dragStartPos = { x: e.clientX, y: e.clientY };
+      prevPointer = { x: e.clientX, y: e.clientY };
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (isDragging) {
+        const dx = (e.clientX - prevPointer.x) * 0.04;
+        const dy = (e.clientY - prevPointer.y) * 0.04;
+        targetPan.x -= dx;
+        targetPan.y += dy;
+        prevPointer = { x: e.clientX, y: e.clientY };
+      }
+    });
+
+    window.addEventListener('mouseup', () => { isDragging = false; });
+
+    // Desktop Wheel Zoom + Unfocus on Zoom Out
+    window.addEventListener('wheel', (e) => {
+      if (focusedIndex !== -1 && e.deltaY > 20) {
+        // Zoom out immediately returns to warp
+        unfocus();
+        return;
+      }
+      targetZoom += e.deltaY * 0.025;
+      targetZoom = Math.min(Math.max(targetZoom, 12.0), 65.0);
+    });
+
+    // Mobile Touch Events
+    window.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 1) {
+        isDragging = true;
+        dragStartPos = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        prevPointer = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      } else if (e.touches.length === 2) {
+        isDragging = false;
+        initialPinchDist = Math.hypot(
+          e.touches[0].clientX - e.touches[1].clientX,
+          e.touches[0].clientY - e.touches[1].clientY
+        );
+      }
+    }, { passive: false });
+
+    window.addEventListener('touchmove', (e) => {
+      if (e.touches.length === 1 && isDragging) {
+        const dx = (e.touches[0].clientX - prevPointer.x) * 0.045;
+        const dy = (e.touches[0].clientY - prevPointer.y) * 0.045;
+        targetPan.x -= dx;
+        targetPan.y += dy;
+        prevPointer = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      } else if (e.touches.length === 2 && initialPinchDist) {
+        const currentDist = Math.hypot(
+          e.touches[0].clientX - e.touches[1].clientX,
+          e.touches[0].clientY - e.touches[1].clientY
+        );
+        const diff = initialPinchDist - currentDist;
+
+        // Pinching out while focused exits back to orbit
+        if (focusedIndex !== -1 && diff > 25) {
+          unfocus();
+          initialPinchDist = currentDist;
+          return;
+        }
+
+        targetZoom += diff * 0.06;
+        targetZoom = Math.min(Math.max(targetZoom, 12.0), 65.0);
+        initialPinchDist = currentDist;
+      }
+    }, { passive: false });
+
+    window.addEventListener('touchend', (e) => {
+      if (e.touches.length === 0) {
+        isDragging = false;
+        initialPinchDist = null;
+      }
+    });
+
+    // Raycasting & Tap to Snap
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+
+    function handleTap(clientX, clientY) {
+      pointer.x = (clientX / window.innerWidth) * 2 - 1;
+      pointer.y = -(clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+
+      const intersects = raycaster.intersectObjects(interactiveObjects);
+      if (intersects.length > 0) {
+        const hit = intersects[0].object;
+        focusOnIndex(hit.userData.index);
+      } else if (focusedIndex !== -1) {
+        // Tapping background un-focuses
+        unfocus();
+      }
+    }
+
+    window.addEventListener('click', (e) => {
+      if (Math.hypot(e.clientX - dragStartPos.x, e.clientY - dragStartPos.y) < 6) {
+        handleTap(e.clientX, e.clientY);
+      }
+    });
+
+    function focusOnIndex(index) {
+      focusedIndex = index;
+      uniforms.uFocusIndex.value = index;
+      backBtn.classList.add('visible');
+    }
+
+    function unfocus() {
+      if (focusedIndex === -1) return;
+      focusedIndex = -1;
+      backBtn.classList.remove('visible');
+    }
+
+    backBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      unfocus();
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') unfocus();
+    });
+
+    // Resize Handler
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // --- 5. Main Render Loop ---
+    const clock = new THREE.Clock();
+
+    function animate() {
+      requestAnimationFrame(animate);
+
+      const elapsedTime = clock.getElapsedTime();
+      uniforms.uTime.value = elapsedTime;
+
+      // Smooth camera pan and zoom interpolation
+      panOffset.x += (targetPan.x - panOffset.x) * 0.08;
+      panOffset.y += (targetPan.y - panOffset.y) * 0.08;
+      zoom += (targetZoom - zoom) * 0.08;
+
+      if (focusedIndex !== -1) {
+        // Smoothly approach 1.0 (flat state)
+        focusProgress += (1.0 - focusProgress) * 0.08;
+        const target = cardData[focusedIndex];
+        const focusZ = (target.scale > 1.8) ? 14.5 : 8.5;
+
+        camera.position.x += (target.x - camera.position.x) * 0.08;
+        camera.position.y += ((target.y - 1.2) - camera.position.y) * 0.08;
+        camera.position.z += (focusZ - camera.position.z) * 0.08;
+        camera.lookAt(target.x, target.y - 1.2, 0);
+      } else {
+        // Smooth return to wavy orbit
+        focusProgress += (0.0 - focusProgress) * 0.08;
+
+        const defaultCamX = panOffset.x;
+        const defaultCamY = panOffset.y - (zoom * 0.75);
+        const defaultCamZ = zoom * 0.85;
+
+        camera.position.x += (defaultCamX - camera.position.x) * 0.08;
+        camera.position.y += (defaultCamY - camera.position.y) * 0.08;
+        camera.position.z += (defaultCamZ - camera.position.z) * 0.08;
+        camera.lookAt(panOffset.x, panOffset.y, 0);
+
+        if (focusProgress < 0.01) {
+          uniforms.uFocusIndex.value = -1.0;
+        }
+      }
+
+      uniforms.uFlattenProgress.value = focusProgress;
+      renderer.render(scene, camera);
+    }
+
+    animate();
+  </script>
+</body>
+</html>
