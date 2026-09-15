@@ -52,25 +52,28 @@
       margin-top: 4px;
       line-height: 1.5;
     }
-    /* Formation Mode Switcher */
-    .mode-pill {
-      display: inline-block;
-      margin-top: 8px;
-      padding: 5px 12px;
+    /* Formation Mode Badge */
+    .mode-badge {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      z-index: 10;
       background: rgba(255, 255, 255, 0.08);
-      border: 1px solid rgba(255, 255, 255, 0.22);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      backdrop-filter: blur(8px);
+      padding: 8px 16px;
       border-radius: 999px;
-      font-size: 9px;
+      color: #ffffff;
+      font-family: monospace;
+      font-size: 10px;
       letter-spacing: 0.18em;
-      color: #00ffff;
       text-transform: uppercase;
-      pointer-events: auto;
       cursor: pointer;
       transition: background 0.2s, border-color 0.2s;
     }
-    .mode-pill:hover {
-      background: rgba(0, 255, 255, 0.18);
-      border-color: #00ffff;
+    .mode-badge:hover {
+      background: rgba(255, 255, 255, 0.18);
+      border-color: rgba(255, 255, 255, 0.4);
     }
     /* Return Button */
     .back-btn {
@@ -105,18 +108,15 @@
     .back-btn:hover {
       background: #e0e0e0;
     }
-    .back-btn:active {
-      transform: translateX(-50%) scale(0.96);
-    }
   </style>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
   <div class="hud">
     <h1>SKEBOB</h1>
-    <p>WASD to glide &bull; Shift for Warp &bull; Tap image to snap &bull; Tap again to 3D Flip</p>
-    <div class="mode-pill" id="modeBtn">Formation [SPACE]: Dome Matrix</div>
+    <p>WASD / Drag flight &bull; [Space / M] Morph Formation &bull; Tap image twice to 3D flip</p>
   </div>
+  <div class="mode-badge" id="modeBtn">MODE: DOME MATRIX</div>
   <button class="back-btn" id="backBtn">&larr; Return to Warp</button>
   <canvas id="webgl"></canvas>
 
@@ -126,7 +126,7 @@
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000);
 
-    const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 2500);
+    const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1500);
     camera.position.set(0, -6, 32);
     camera.lookAt(0, 0, 0);
 
@@ -145,29 +145,30 @@
       uWaveFreq: { value: 0.14 },
       uFocusIndex: { value: -1.0 },
       uFlattenProgress: { value: 0.0 },
+      uDomeStrength: { value: 1.0 }, // Morph between Dome (1.0) and Flat/Helix (0.0)
       uMouseWorld: { value: new THREE.Vector2(9999.0, 9999.0) },
       uMouseStrength: { value: 0.0 },
-      uShockCenter: { value: new THREE.Vector2(0.0, 0.0) },
-      uShockRadius: { value: -999.0 },
-      uShockIntensity: { value: 0.0 }
+      uShockOrigin: { value: new THREE.Vector2(0.0, 0.0) },
+      uShockTime: { value: -100.0 }
     };
 
-    // Shared GLSL: IMAX Spherical Curvature + Ripple + Global Circular Shockwave
-    const sphereDomeGLSL = `
+    // Shared GLSL: IMAX Curvature + Waves + Expanding Circular Shockwave
+    const sharedGLSL = `
       uniform float uTime;
       uniform float uWaveHeight;
       uniform float uWaveFreq;
+      uniform float uDomeStrength;
       uniform vec2 uMouseWorld;
       uniform float uMouseStrength;
-      uniform vec2 uShockCenter;
-      uniform float uShockRadius;
-      uniform float uShockIntensity;
-      
+      uniform vec2 uShockOrigin;
+      uniform float uShockTime;
+
       float getDome(vec2 pos) {
         float r2 = dot(pos, pos);
-        float R = 210.0;
+        float R = 190.0;
         float R2 = R * R;
-        return R - sqrt(max(R2 - min(r2, R2 - 1.0), 0.0));
+        float d = R - sqrt(max(R2 - min(r2, R2 - 1.0), 0.0));
+        return d * uDomeStrength;
       }
 
       float getWave(vec2 pos) {
@@ -175,31 +176,36 @@
         float w2 = sin((pos.x + pos.y) * uWaveFreq * 0.6 + uTime * 0.4) * 0.5;
         float base = (w1 + w2) * uWaveHeight;
 
-        // Interactive cursor wake
+        // Mouse wake ripple
         float d = distance(pos, uMouseWorld);
         float ripple = sin(d * 1.7 - uTime * 5.5) * exp(-d * 0.35) * 1.8 * uMouseStrength;
 
-        // Circular Shockwave across entire world
-        float swDist = distance(pos, uShockCenter);
-        float swDiff = swDist - uShockRadius;
-        float shock = sin(swDiff * 0.28) * exp(-abs(swDiff) * 0.10) * uShockIntensity * 4.2;
+        // Circular Shockwave
+        float shockWave = 0.0;
+        if (uShockTime >= 0.0 && uShockTime < 3.5) {
+          float distShock = distance(pos, uShockOrigin);
+          float front = uShockTime * 90.0;
+          float diff = abs(distShock - front);
+          float ring = smoothstep(14.0, 0.0, diff);
+          shockWave = sin(diff * 0.5) * ring * exp(-uShockTime * 1.2) * 5.0;
+        }
 
-        return base + ripple + shock;
+        return base + ripple + shockWave;
       }
     `;
 
     function getDomeZ(x, y) {
       const r2 = x * x + y * y;
-      const R = 210.0;
-      return R - Math.sqrt(Math.max(R * R - Math.min(r2, R * R - 1), 0));
+      const R = 190.0;
+      return (R - Math.sqrt(Math.max(R * R - Math.min(r2, R * R - 1), 0))) * uniforms.uDomeStrength.value;
     }
 
-    // --- 1. IMAX Spherical Curved Grid ---
-    const gridGeo = new THREE.PlaneGeometry(420, 420, 240, 240);
+    // --- 1. IMAX Curved Grid ---
+    const gridGeo = new THREE.PlaneGeometry(300, 300, 220, 220);
     const gridMat = new THREE.ShaderMaterial({
       uniforms: uniforms,
       vertexShader: `
-        ${sphereDomeGLSL}
+        ${sharedGLSL}
         varying vec3 vWorldPos;
         void main() {
           vec3 pos = position;
@@ -216,7 +222,7 @@
           float c = 1.0 - min(line, 1.0);
 
           float dist = length(vWorldPos.xy);
-          float alpha = smoothstep(195.0, 40.0, dist) * c * 0.55;
+          float alpha = smoothstep(145.0, 35.0, dist) * c * 0.55;
           gl_FragColor = vec4(vec3(1.0), alpha);
         }
       `,
@@ -225,18 +231,18 @@
     const gridMesh = new THREE.Mesh(gridGeo, gridMat);
     scene.add(gridMesh);
 
-    // --- 2. High-Visibility Cosmic Particle Volume ---
-    const particleCount = 2500;
+    // --- 2. Floating Cosmic Particles ---
+    const particleCount = 2000;
     const particleGeo = new THREE.BufferGeometry();
     const particlePos = new Float32Array(particleCount * 3);
     const particleSizes = new Float32Array(particleCount);
     const particleSeeds = new Float32Array(particleCount);
 
     for (let i = 0; i < particleCount; i++) {
-      particlePos[i * 3 + 0] = (Math.random() - 0.5) * 320;
-      particlePos[i * 3 + 1] = (Math.random() - 0.5) * 320;
-      particlePos[i * 3 + 2] = (Math.random() - 0.2) * 55;
-      particleSizes[i] = Math.random() * 26.0 + 12.0;
+      particlePos[i * 3 + 0] = (Math.random() - 0.5) * 260;
+      particlePos[i * 3 + 1] = (Math.random() - 0.5) * 260;
+      particlePos[i * 3 + 2] = (Math.random() - 0.25) * 40;
+      particleSizes[i] = Math.random() * 22.0 + 8.0;
       particleSeeds[i] = Math.random() * 100.0;
     }
 
@@ -250,26 +256,22 @@
       cvs.height = 64;
       const ctx = cvs.getContext('2d');
       const grad = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-      grad.addColorStop(0, 'rgba(255,255,255,1.0)');
-      grad.addColorStop(0.25, 'rgba(220,245,255,0.85)');
-      grad.addColorStop(0.65, 'rgba(120,200,255,0.25)');
-      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      grad.addColorStop(0, 'rgba(255,255,255,1)');
+      grad.addColorStop(0.3, 'rgba(255,255,255,0.7)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, 64, 64);
       return new THREE.CanvasTexture(cvs);
     }
 
-    const particleUniforms = {
-      uTime: uniforms.uTime,
-      uTexture: { value: createParticleTexture() },
-      uSpeedWarp: { value: 0.0 }
-    };
-
     const particleMat = new THREE.ShaderMaterial({
-      uniforms: particleUniforms,
+      uniforms: {
+        ...uniforms,
+        uTexture: { value: createParticleTexture() },
+        uSpeedWarp: { value: 0.0 }
+      },
       vertexShader: `
-        ${sphereDomeGLSL}
-        uniform float uTime;
+        ${sharedGLSL}
         uniform float uSpeedWarp;
         attribute float aSize;
         attribute float aSeed;
@@ -277,16 +279,16 @@
 
         void main() {
           vec3 pos = position;
-          pos.z += getDome(pos.xy) * 0.7;
-          pos.z += sin(uTime * 0.9 + aSeed) * 1.5;
-          pos.x += cos(uTime * 0.45 + aSeed) * 0.8;
+          pos.z += getDome(pos.xy) + getWave(pos.xy) * 0.4;
+          pos.z += sin(uTime * 0.8 + aSeed) * 0.8;
+          pos.x += cos(uTime * 0.4 + aSeed) * 0.5;
 
           vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
           gl_Position = projectionMatrix * mvPosition;
 
-          float twinkle = sin(uTime * 2.2 + aSeed) * 0.35 + 0.65;
-          gl_PointSize = max(2.0, (aSize * twinkle * (1.0 + uSpeedWarp * 1.1)) * (160.0 / -mvPosition.z));
-          vAlpha = smoothstep(280.0, 10.0, -mvPosition.z) * 0.85;
+          float twinkle = sin(uTime * 2.0 + aSeed) * 0.35 + 0.65;
+          gl_PointSize = (aSize * twinkle * (1.0 + uSpeedWarp * 0.85)) * (15.0 / -mvPosition.z);
+          vAlpha = smoothstep(120.0, 5.0, -mvPosition.z) * 0.75;
         }
       `,
       fragmentShader: `
@@ -305,155 +307,168 @@
     const particleSystem = new THREE.Points(particleGeo, particleMat);
     scene.add(particleSystem);
 
-    // --- 3. Multi-Line Text Texture Helper (Prevents Text Cutting Off) ---
-    function wrapText(ctx, text, x, y, maxWidth, lineHeight, maxLines = 3) {
-      const words = text.split(' ');
-      let line = '';
-      let currentY = y;
-      let count = 0;
-
-      for (let n = 0; n < words.length; n++) {
-        const testLine = line + words[n] + ' ';
-        const metrics = ctx.measureText(testLine);
-        if (metrics.width > maxWidth && n > 0) {
-          ctx.fillText(line.trim(), x, currentY);
-          line = words[n] + ' ';
-          currentY += lineHeight;
-          count++;
-          if (count >= maxLines - 1 && n < words.length - 1) {
-            let remaining = words.slice(n).join(' ');
-            while (ctx.measureText(remaining + '...').width > maxWidth && remaining.length > 0) {
-              remaining = remaining.substring(0, remaining.length - 1);
-            }
-            ctx.fillText(remaining + '...', x, currentY);
-            return;
-          }
-        } else {
-          line = testLine;
-        }
-      }
-      ctx.fillText(line.trim(), x, currentY);
-    }
-
+    // --- 3. Textures: Multiline Typography & Card Back ---
     function makeTextTexture(title, desc) {
       const cvs = document.createElement('canvas');
       cvs.width = 1024;
-      cvs.height = 320;
+      cvs.height = 420;
       const ctx = cvs.getContext('2d');
       ctx.clearRect(0, 0, cvs.width, cvs.height);
 
       ctx.fillStyle = "#ffffff";
-      ctx.font = "900 46px monospace";
+      ctx.font = "900 44px monospace";
       ctx.textAlign = "center";
-      ctx.fillText(title.toUpperCase(), 512, 85);
+      ctx.fillText(title.toUpperCase(), 512, 65);
 
-      ctx.fillStyle = "#a2a2a8";
-      ctx.font = "500 27px monospace";
+      // Multiline wrapping for descriptions
+      ctx.fillStyle = "#a2a2ab";
+      ctx.font = "500 25px monospace";
       ctx.textAlign = "center";
-      wrapText(ctx, desc || "Archival record", 512, 145, 920, 36, 3);
+      
+      const words = (desc || "").split(' ');
+      const maxWidth = 880;
+      const lineHeight = 36;
+      let line = '';
+      let y = 125;
+
+      for (let n = 0; n < words.length; n++) {
+        const testLine = line + words[n] + ' ';
+        if (ctx.measureText(testLine).width > maxWidth && n > 0) {
+          ctx.fillText(line.trim(), 512, y);
+          line = words[n] + ' ';
+          y += lineHeight;
+        } else {
+          line = testLine;
+        }
+      }
+      if (line.trim().length > 0) ctx.fillText(line.trim(), 512, y);
 
       const tex = new THREE.CanvasTexture(cvs);
       tex.needsUpdate = true;
       return tex;
     }
 
-    // --- 4. Card Backside Generator (Brushed Silver Collectible Card Slab) ---
-    function makeCardBackTexture(item, index) {
+    // Collectible Card Back Canvas Texture (Gray/White gradient, reflections, title)
+    function makeCardBackTexture(title) {
       const cvs = document.createElement('canvas');
       cvs.width = 1024;
       cvs.height = 1024;
       const ctx = cvs.getContext('2d');
 
-      // Brushed Metallic Titanium Gradient
+      // Brushed titanium diagonal gradient
       const grad = ctx.createLinearGradient(0, 0, 1024, 1024);
-      grad.addColorStop(0, '#1a1a20');
-      grad.addColorStop(0.3, '#32323c');
-      grad.addColorStop(0.5, '#ececf2');
-      grad.addColorStop(0.7, '#383842');
-      grad.addColorStop(1, '#111116');
+      grad.addColorStop(0, '#121215');
+      grad.addColorStop(0.3, '#2c2c34');
+      grad.addColorStop(0.5, '#484855');
+      grad.addColorStop(0.7, '#24242a');
+      grad.addColorStop(1, '#0e0e11');
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, 1024, 1024);
 
-      // Tech Inner Border Frame
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
+      // Luxury card frames
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
       ctx.lineWidth = 4;
       ctx.strokeRect(60, 60, 904, 904);
 
-      // Corner Brackets on Card Back
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 10;
-      // Top Left
-      ctx.strokeRect(50, 50, 60, 10);
-      ctx.strokeRect(50, 50, 10, 60);
-      // Bottom Right
-      ctx.strokeRect(914, 964, 60, 10);
-      ctx.strokeRect(964, 914, 10, 60);
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(75, 75, 874, 874);
 
-      // Specular Holographic Diagonal Sheen
-      const sheen = ctx.createLinearGradient(150, 0, 850, 1024);
-      sheen.addColorStop(0.4, 'rgba(255,255,255,0)');
-      sheen.addColorStop(0.5, 'rgba(255,255,255,0.28)');
-      sheen.addColorStop(0.6, 'rgba(255,255,255,0)');
-      ctx.fillStyle = sheen;
-      ctx.fillRect(60, 60, 904, 904);
-
-      // Header Tag
-      ctx.fillStyle = '#8f8f99';
-      ctx.font = '800 24px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(`SKEBOB ARCHIVE // CORE ARTIFACT #${String(index + 1).padStart(3, '0')}`, 512, 160);
-
-      // Main Title
-      ctx.fillStyle = '#0a0a0d';
-      ctx.font = '900 58px monospace';
-      ctx.fillText((item.title || "Skebob").toUpperCase(), 512, 340);
-
-      // Divider Line
-      ctx.strokeStyle = '#0a0a0d';
+      // Minimalist crest
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
       ctx.lineWidth = 3;
       ctx.beginPath();
-      ctx.moveTo(260, 390);
-      ctx.lineTo(764, 390);
+      ctx.arc(512, 430, 110, 0, Math.PI * 2);
       ctx.stroke();
 
-      // Description & Meta
-      ctx.fillStyle = '#1c1c22';
-      ctx.font = '600 30px monospace';
-      wrapText(ctx, item.description || "Authentic verified digital specimen.", 512, 470, 780, 44, 5);
+      ctx.beginPath();
+      ctx.moveTo(512, 290);
+      ctx.lineTo(512, 570);
+      ctx.moveTo(372, 430);
+      ctx.lineTo(652, 430);
+      ctx.stroke();
 
-      // Security Footer Details
-      ctx.fillStyle = '#656570';
-      ctx.font = '700 20px monospace';
-      ctx.fillText("CLASSIFIED SKEBOB SPECIFICATION &bull; ENCRYPTED METADATA", 512, 850);
+      // Card Back Typography
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "800 34px monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("SKEBOB ARCHIVE", 512, 610);
+
+      ctx.fillStyle = "#f0f0f5";
+      ctx.font = "900 48px monospace";
+      ctx.fillText((title || "ARTIFACT").toUpperCase(), 512, 685);
+
+      ctx.fillStyle = "#777782";
+      ctx.font = "600 24px monospace";
+      ctx.fillText("AUTHENTIC COLLECTIBLE", 512, 750);
 
       const tex = new THREE.CanvasTexture(cvs);
       tex.needsUpdate = true;
       return tex;
     }
 
-    // --- 5. Formations & Initialization ---
+    // --- 4. Morphing Formation Coordinates ---
+    let currentMode = 0; // 0: Dome, 1: Helix, 2: Saturn Ring
+    const MODES = ["DOME MATRIX", "DNA HELIX", "SATURN RING"];
+    const modeBtn = document.getElementById('modeBtn');
+
+    function calculateFormations(count) {
+      const formations = { dome: [], helix: [], ring: [] };
+
+      // 1. Dome Organic Positions
+      formations.dome.push({ x: 0, y: 0, z: 0, scale: 2.4 });
+      let currentRadius = 16.0;
+      let angle = 0;
+      for (let i = 1; i < count; i++) {
+        let placed = false, attempts = 0;
+        while (!placed && attempts < 200) {
+          attempts++;
+          angle += 0.85 + (Math.random() * 0.25);
+          currentRadius += 0.55;
+          const jitter = (Math.random() - 0.5) * 4.0;
+          const x = Math.cos(angle) * (currentRadius + jitter);
+          const y = Math.sin(angle) * (currentRadius + jitter);
+          if (!formations.dome.some(p => Math.hypot(p.x - x, p.y - y) < 14.5)) {
+            formations.dome.push({ x, y, z: 0, scale: 0.95 + Math.random() * 0.45 });
+            placed = true;
+          }
+        }
+      }
+
+      // 2. DNA Double Helix
+      for (let i = 0; i < count; i++) {
+        const strand = (i % 2 === 0) ? 0 : Math.PI;
+        const theta = (i * 0.45) + strand;
+        const r = 20.0;
+        const x = Math.cos(theta) * r;
+        const y = Math.sin(theta) * r;
+        const z = ((i - count * 0.5) * 3.6);
+        formations.helix.push({ x, y, z, scale: 1.1 });
+      }
+
+      // 3. Saturn Orbital Ring
+      for (let i = 0; i < count; i++) {
+        const track = i % 4;
+        const r = 32.0 + track * 8.5;
+        const theta = (i / count) * Math.PI * 2 + (track * 0.35);
+        const x = Math.cos(theta) * r;
+        const y = Math.sin(theta) * r * 0.65; // Elliptical ring
+        const z = (Math.random() - 0.5) * 4.0;
+        formations.ring.push({ x, y, z, scale: 1.15 });
+      }
+
+      return formations;
+    }
+
+    // --- 5. Gallery Initialization ---
     const interactiveObjects = [];
     const cardMeshList = [];
-    const textMeshList = [];
     const cardData = [];
     const cardGroup = new THREE.Group();
     scene.add(cardGroup);
 
     const texLoader = new THREE.TextureLoader();
-
-    // Formation Types: 0: Dome Matrix, 1: DNA Double Helix, 2: Saturn Orbital Ring
-    let currentFormation = 0;
-    const formationNames = ["Dome Matrix", "DNA Double Helix", "Saturn Orbital Ring"];
-    const modeBtn = document.getElementById('modeBtn');
-
-    function switchFormation() {
-      currentFormation = (currentFormation + 1) % 3;
-      modeBtn.textContent = `Formation [SPACE]: ${formationNames[currentFormation]}`;
-    }
-    modeBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      switchFormation();
-    });
+    let formationData = null;
 
     fetch('list.json')
       .then(res => res.json())
@@ -467,65 +482,17 @@
         items.unshift(hero);
       }
 
-      // 1. Calculate Dome Positions (Spiral)
-      const domePositions = [{ x: 0, y: 0, scale: 2.4, isHero: true }];
-      let currentRadius = 16.0;
-      let angle = 0;
-      for (let i = 1; i < items.length; i++) {
-        let placed = false;
-        let attempts = 0;
-        while (!placed && attempts < 200) {
-          attempts++;
-          angle += 0.85 + (Math.random() * 0.25);
-          currentRadius += 0.55;
-          const jitter = (Math.random() - 0.5) * 4.0;
-          const x = Math.cos(angle) * (currentRadius + jitter);
-          const y = Math.sin(angle) * (currentRadius + jitter);
-          if (!domePositions.some(p => Math.hypot(p.x - x, p.y - y) < 14.5)) {
-            domePositions.push({
-              x,
-              y,
-              scale: 0.95 + Math.random() * 0.45,
-              rot: (Math.random() - 0.5) * 0.18
-            });
-            placed = true;
-          }
-        }
-      }
+      formationData = calculateFormations(items.length);
 
       items.forEach((item, index) => {
-        const posD = domePositions[index];
-        const baseW = 5.2 * posD.scale;
-        const baseH = 5.2 * posD.scale;
+        const dPos = formationData.dome[index];
+        const baseW = 5.2 * dPos.scale;
+        const baseH = 5.2 * dPos.scale;
 
-        // Formation 1: DNA Double Helix
-        const strand = index % 2;
-        const helixAngle = (index / items.length) * (6.0 * Math.PI) + (strand * Math.PI);
-        const helixRadius = 21.0;
-        const posHelix = {
-          x: Math.cos(helixAngle) * helixRadius,
-          y: (index - items.length * 0.5) * 4.2,
-          z: Math.sin(helixAngle) * helixRadius + 15.0,
-          rotY: -helixAngle + Math.PI * 0.5,
-          rotZ: 0
-        };
-
-        // Formation 2: Saturn Orbital Ring
-        const ringAngle = (index / items.length) * (2.0 * Math.PI);
-        const ringRadius = 26.0 + (index % 4) * 6.8;
-        const posRing = {
-          x: Math.cos(ringAngle) * ringRadius,
-          y: Math.sin(ringAngle) * ringRadius * 0.62,
-          z: Math.sin(ringAngle) * ringRadius * 0.32,
-          rotY: 0,
-          rotZ: ringAngle - Math.PI * 0.5
-        };
-
-        const texture = texLoader.load(item.src);
-        const backTexture = makeCardBackTexture(item, index);
-
-        // Card Shader: Front (White Corner Border Lines) + Back (3D Flip Metallic Card)
         const cardGeo = new THREE.PlaneGeometry(baseW, baseH, 32, 32);
+        const texture = texLoader.load(item.src);
+        const backTexture = makeCardBackTexture(item.title);
+
         const cardMat = new THREE.ShaderMaterial({
           uniforms: {
             ...uniforms,
@@ -534,7 +501,7 @@
             uIndex: { value: index }
           },
           vertexShader: `
-            ${sphereDomeGLSL}
+            ${sharedGLSL}
             uniform float uIndex;
             uniform float uFocusIndex;
             uniform float uFlattenProgress;
@@ -550,7 +517,7 @@
 
               if (abs(uIndex - uFocusIndex) < 0.1) {
                 waveZ = mix(waveZ, 0.0, uFlattenProgress);
-                worldPos.z += uFlattenProgress * 4.0;
+                worldPos.z += uFlattenProgress * 4.5;
               }
 
               worldPos.z += domeZ + waveZ + 0.12;
@@ -558,96 +525,76 @@
             }
           `,
           fragmentShader: `
+            ${sharedGLSL}
             uniform sampler2D uTexture;
             uniform sampler2D uBackTexture;
-            uniform float uTime;
             varying vec2 vUv;
 
             void main() {
-              if (gl_FrontFacing) {
-                // Front Face: Artwork with White Border Lines in Corners
-                vec4 tex = texture2D(uTexture, vUv);
+              // Anti-aliased thin border line along perimeter
+              float edgeDist = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y));
+              float borderLine = 1.0 - smoothstep(0.008, 0.02, edgeDist);
 
-                // Smooth perimeter edge feathering
-                float edge = smoothstep(0.0, 0.038, vUv.x) * smoothstep(1.0, 0.962, vUv.x) *
-                             smoothstep(0.0, 0.038, vUv.y) * smoothstep(1.0, 0.962, vUv.y);
+              // Corner Line Gradient: Top-Right (1,1) and Bottom-Left (0,0)
+              float dTR = distance(vUv, vec2(1.0, 1.0));
+              float dBL = distance(vUv, vec2(0.0, 0.0));
+              float cornerFade = smoothstep(0.35, 0.02, dTR) + smoothstep(0.35, 0.02, dBL);
+              float activeBorder = borderLine * cornerFade;
 
-                // White BORDER CORNER LINES (Viewfinder Corner Brackets)
-                float bw = 0.016;       // border line thickness
-                float cLen = 0.22;     // length of corner lines
-
-                // Top-Right Corner Border Line
-                vec2 dTR = vec2(1.0) - vUv;
-                float trLineH = step(0.0, dTR.y) * step(dTR.y, bw) * smoothstep(cLen, 0.0, dTR.x);
-                float trLineV = step(0.0, dTR.x) * step(dTR.x, bw) * smoothstep(cLen, 0.0, dTR.y);
-                float trBorder = max(trLineH, trLineV);
-
-                // Bottom-Left Corner Border Line
-                vec2 dBL = vUv;
-                float blLineH = step(0.0, dBL.y) * step(dBL.y, bw) * smoothstep(cLen, 0.0, dBL.x);
-                float blLineV = step(0.0, dBL.x) * step(dBL.x, bw) * smoothstep(cLen, 0.0, dBL.y);
-                float blBorder = max(blLineH, blLineV);
-
-                float borderLines = max(trBorder, blBorder);
-
-                vec3 col = mix(tex.rgb, vec3(1.0), borderLines);
-                float alpha = max(edge * 0.96, borderLines);
-
-                gl_FragColor = vec4(col, alpha);
+              // Front vs Back rendering
+              if (!gl_FrontFacing) {
+                vec4 bTex = texture2D(uBackTexture, vec2(1.0 - vUv.x, vUv.y));
+                float shimmer = pow(max(0.0, sin((vUv.x + vUv.y) * 5.0 + uTime * 2.5)), 8.0) * 0.35;
+                vec3 col = bTex.rgb + vec3(shimmer) + vec3(1.0) * activeBorder;
+                gl_FragColor = vec4(col, 1.0);
               } else {
-                // Back Face: 3D Flip Brushed Metallic Card
-                vec2 backUv = vec2(1.0 - vUv.x, vUv.y);
-                vec4 backTex = texture2D(uBackTexture, backUv);
+                vec4 fTex = texture2D(uTexture, vUv);
+                vec3 col = mix(fTex.rgb, vec3(1.0), activeBorder);
 
-                float sheen = sin((backUv.x + backUv.y) * 4.0 - uTime * 2.5) * 0.14;
-                vec3 col = backTex.rgb + vec3(sheen);
-                float edge = smoothstep(0.0, 0.035, backUv.x) * smoothstep(1.0, 0.965, backUv.x) *
-                             smoothstep(0.0, 0.035, backUv.y) * smoothstep(1.0, 0.965, backUv.y);
-
-                gl_FragColor = vec4(col, edge * backTex.a);
+                // Feathered borderless edge
+                float alphaEdge = smoothstep(0.0, 0.025, vUv.x) * smoothstep(1.0, 0.975, vUv.x) *
+                                  smoothstep(0.0, 0.025, vUv.y) * smoothstep(1.0, 0.975, vUv.y);
+                gl_FragColor = vec4(col, clamp(alphaEdge + activeBorder, 0.0, 1.0));
               }
             }
           `,
           transparent: true,
-          alphaTest: 0.01,
           side: THREE.DoubleSide
         });
 
         const cardMesh = new THREE.Mesh(cardGeo, cardMat);
-        cardMesh.position.set(posD.x, posD.y, 0);
-        if (posD.rot) cardMesh.rotation.z = posD.rot;
-
+        cardMesh.position.set(dPos.x, dPos.y, dPos.z);
         cardMesh.userData = {
           index,
           item,
-          scale: posD.scale,
-          posDome: { x: posD.x, y: posD.y, z: 0, rotX: 0, rotY: 0, rotZ: posD.rot || 0 },
-          posHelix: posHelix,
-          posRing: posRing,
+          scale: dPos.scale,
+          baseRotX: 0,
+          baseRotY: 0,
+          baseRotZ: 0,
           targetRotX: 0,
           targetRotY: 0,
+          flipAngle: 0,
           isFlipped: false,
-          currentFlip: 0.0
+          currentPos: new THREE.Vector3(dPos.x, dPos.y, dPos.z),
+          targetPos: new THREE.Vector3(dPos.x, dPos.y, dPos.z)
         };
-
         cardGroup.add(cardMesh);
         interactiveObjects.push(cardMesh);
         cardMeshList.push(cardMesh);
 
         // Subtitle Mesh
-        const textH = 1.35 * posD.scale;
-        const textGeo = new THREE.PlaneGeometry(baseW * 1.3, textH, 24, 8);
+        const textH = 1.7 * dPos.scale;
+        const textGeo = new THREE.PlaneGeometry(baseW * 1.35, textH, 24, 8);
         const textTex = makeTextTexture(item.title || "Skebob", item.description || "");
 
         const textMat = new THREE.ShaderMaterial({
           uniforms: {
             ...uniforms,
             uTexture: { value: textTex },
-            uIndex: { value: index },
-            uSubAlpha: { value: 1.0 }
+            uIndex: { value: index }
           },
           vertexShader: `
-            ${sphereDomeGLSL}
+            ${sharedGLSL}
             uniform float uIndex;
             uniform float uFocusIndex;
             uniform float uFlattenProgress;
@@ -663,20 +610,19 @@
 
               if (abs(uIndex - uFocusIndex) < 0.1) {
                 waveZ = mix(waveZ, 0.0, uFlattenProgress);
-                worldPos.z += uFlattenProgress * 4.0;
+                worldPos.z += uFlattenProgress * 4.5;
               }
 
+              // Forward bias (+0.35) prevents any wave occlusion
               worldPos.z += domeZ + waveZ + 0.35;
               gl_Position = projectionMatrix * viewMatrix * worldPos;
             }
           `,
           fragmentShader: `
             uniform sampler2D uTexture;
-            uniform float uSubAlpha;
             varying vec2 vUv;
             void main() {
-              vec4 tex = texture2D(uTexture, vUv);
-              gl_FragColor = vec4(tex.rgb, tex.a * uSubAlpha);
+              gl_FragColor = texture2D(uTexture, vUv);
             }
           `,
           transparent: true,
@@ -685,51 +631,68 @@
 
         const textMesh = new THREE.Mesh(textGeo, textMat);
         const yOffset = -(baseH * 0.5 + textH * 0.65);
-        textMesh.position.set(posD.x, posD.y + yOffset, 0);
-        if (posD.rot) textMesh.rotation.z = posD.rot;
-        textMesh.userData = { index, yOffset, parentCard: cardMesh };
-
+        textMesh.position.set(dPos.x, dPos.y + yOffset, dPos.z);
+        textMesh.userData = {
+          index,
+          yOffset,
+          targetPos: new THREE.Vector3(dPos.x, dPos.y + yOffset, dPos.z)
+        };
         cardGroup.add(textMesh);
         interactiveObjects.push(textMesh);
-        textMeshList.push(textMesh);
 
-        cardData.push({ x: posD.x, y: posD.y, scale: posD.scale });
+        cardData.push({ x: dPos.x, y: dPos.y, z: dPos.z, scale: dPos.scale, mesh: cardMesh, textMesh });
       });
     }
 
-    // --- 6. Controls, Flight, Shockwave & Interaction ---
+    // --- 6. Controls, Flight, Shockwaves & Flip Rig ---
     let isDragging = false;
     let dragStartPos = { x: 0, y: 0 };
     let prevPointer = { x: 0, y: 0 };
     let targetPan = { x: 0, y: 0 };
     let panOffset = { x: 0, y: 0 };
 
-    // Massive Zoom Range
+    // Expanded Zoom Range: 4.0 (macro close) to 190.0 (galaxy-wide)
     let targetZoom = 32.0;
     let zoom = 32.0;
     let initialPinchDist = null;
 
     let focusedIndex = -1;
     let focusProgress = 0.0;
-    let delayedFocusTimeout = null;
     const backBtn = document.getElementById('backBtn');
 
-    // Global Shockwave State
-    let shockRadius = -999.0;
-    let shockIntensity = 0.0;
-
-    function triggerShockwave(worldX, worldY) {
-      uniforms.uShockCenter.value.set(worldX, worldY);
-      shockRadius = 0.0;
-      shockIntensity = 1.0;
-    }
-
+    // Raycasting Plane
     const groundPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
-    const groundRaycaster = new THREE.Raycaster();
+    const raycaster = new THREE.Raycaster();
     const groundHit = new THREE.Vector3();
     const pointer = new THREE.Vector2(-999, -999);
     let hoveredCard = null;
 
+    // Trigger Shockwave
+    let shockStartTime = -100.0;
+    function triggerShockwave(x, y) {
+      uniforms.uShockOrigin.value.set(x, y);
+      shockStartTime = uniforms.uTime.value;
+    }
+
+    // Morph Mode Switch
+    function switchMode(newMode) {
+      currentMode = newMode;
+      modeBtn.innerText = `MODE: ${MODES[currentMode]}`;
+      const modeKey = (currentMode === 0) ? 'dome' : (currentMode === 1) ? 'helix' : 'ring';
+
+      cardData.forEach((item, i) => {
+        const p = formationData[modeKey][i];
+        item.mesh.userData.targetPos.set(p.x, p.y, p.z);
+        item.textMesh.userData.targetPos.set(p.x, p.y + item.textMesh.userData.yOffset, p.z);
+        item.x = p.x;
+        item.y = p.y;
+        item.z = p.z;
+      });
+    }
+
+    modeBtn.addEventListener('click', () => switchMode((currentMode + 1) % 3));
+
+    // Keyboard Flight & Navigation
     const keysDown = {};
     let isSprinting = false;
 
@@ -737,12 +700,12 @@
       keysDown[e.code] = true;
       if (e.shiftKey) isSprinting = true;
 
-      // Formation Mode Switch via Space or M
-      if (e.code === 'Space' || e.code === 'KeyM') {
-        switchFormation();
+      // Space or M: Morph Formations
+      if (e.code === 'KeyM' || (e.code === 'Space' && focusedIndex === -1)) {
+        switchMode((currentMode + 1) % 3);
       }
 
-      // Quick Carousel Navigation when Focused
+      // Quick-Cycle in Focus Mode
       if (focusedIndex !== -1 && cardData.length > 0) {
         if (e.code === 'KeyD' || e.code === 'ArrowRight') {
           focusOnIndex((focusedIndex + 1) % cardData.length);
@@ -759,13 +722,13 @@
       if (!e.shiftKey) isSprinting = false;
     });
 
-    // Mouse & Cursor Wake
+    // Mouse & Cursor Events
     window.addEventListener('mousemove', (e) => {
       pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
       pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
 
-      groundRaycaster.setFromCamera(pointer, camera);
-      if (groundRaycaster.ray.intersectPlane(groundPlane, groundHit)) {
+      raycaster.setFromCamera(pointer, camera);
+      if (raycaster.ray.intersectPlane(groundPlane, groundHit)) {
         uniforms.uMouseWorld.value.set(groundHit.x, groundHit.y);
         uniforms.uMouseStrength.value = 1.0;
       }
@@ -778,9 +741,9 @@
         prevPointer = { x: e.clientX, y: e.clientY };
       }
 
-      // Magnetic Hover Tilt
+      // Magnetic Card Hover Tilt
       if (!isDragging && focusedIndex === -1) {
-        const cardHits = groundRaycaster.intersectObjects(cardMeshList);
+        const cardHits = raycaster.intersectObjects(cardMeshList);
         if (cardHits.length > 0) {
           const hitMesh = cardHits[0].object;
           hoveredCard = hitMesh;
@@ -795,9 +758,7 @@
       }
     });
 
-    window.addEventListener('mouseleave', () => {
-      uniforms.uMouseStrength.value = 0.0;
-    });
+    window.addEventListener('mouseleave', () => { uniforms.uMouseStrength.value = 0.0; });
 
     window.addEventListener('mousedown', (e) => {
       isDragging = true;
@@ -807,17 +768,17 @@
 
     window.addEventListener('mouseup', () => { isDragging = false; });
 
-    // Desktop Wheel Zoom with Massive Range
+    // Wheel Zoom: 4.0 (macro) to 190.0 (wide)
     window.addEventListener('wheel', (e) => {
       if (focusedIndex !== -1 && e.deltaY > 20) {
         unfocus();
         return;
       }
-      targetZoom += e.deltaY * 0.04;
-      targetZoom = Math.min(Math.max(targetZoom, 3.5), 190.0);
+      targetZoom += e.deltaY * 0.035;
+      targetZoom = Math.min(Math.max(targetZoom, 4.0), 190.0);
     });
 
-    // Mobile Touch Events
+    // Touch Handling
     window.addEventListener('touchstart', (e) => {
       if (e.touches.length === 1) {
         isDragging = true;
@@ -845,60 +806,48 @@
           e.touches[0].clientY - e.touches[1].clientY
         );
         const diff = initialPinchDist - currentDist;
-
         if (focusedIndex !== -1 && diff > 25) {
           unfocus();
           initialPinchDist = currentDist;
           return;
         }
-
-        targetZoom += diff * 0.08;
-        targetZoom = Math.min(Math.max(targetZoom, 3.5), 190.0);
+        targetZoom += diff * 0.07;
+        targetZoom = Math.min(Math.max(targetZoom, 4.0), 190.0);
         initialPinchDist = currentDist;
       }
     }, { passive: false });
 
-    window.addEventListener('touchend', (e) => {
-      if (e.touches.length === 0) {
-        isDragging = false;
-        initialPinchDist = null;
-      }
-    });
+    window.addEventListener('touchend', () => { isDragging = false; initialPinchDist = null; });
 
-    // Raycasting, Circular Shockwave & Tap-to-Snap / 3D Flip
-    const clickRaycaster = new THREE.Raycaster();
+    // Tap Handling: Shockwave + Card Snap or Flip
     function handleTap(clientX, clientY) {
       pointer.x = (clientX / window.innerWidth) * 2 - 1;
       pointer.y = -(clientY / window.innerHeight) * 2 + 1;
-      clickRaycaster.setFromCamera(pointer, camera);
+      raycaster.setFromCamera(pointer, camera);
 
-      const intersects = clickRaycaster.intersectObjects(interactiveObjects);
-      
-      // Tap on Ground or Empty Canvas
-      if (clickRaycaster.ray.intersectPlane(groundPlane, groundHit)) {
-        triggerShockwave(groundHit.x, groundHit.y);
-      }
-
+      const intersects = raycaster.intersectObjects(interactiveObjects);
       if (intersects.length > 0) {
         const hit = intersects[0].object;
-        const index = hit.userData.index;
+        const hitIndex = hit.userData.index;
 
-        if (focusedIndex === index) {
-          // Tap focused image again -> 3D Flip!
-          const cardMesh = cardMeshList[index];
-          cardMesh.userData.isFlipped = !cardMesh.userData.isFlipped;
+        // Shockwave from tap position
+        triggerShockwave(hit.position.x, hit.position.y);
+
+        if (focusedIndex === hitIndex) {
+          // Already focused: Flip card 180 degrees
+          const mesh = cardData[hitIndex].mesh;
+          mesh.userData.isFlipped = !mesh.userData.isFlipped;
+          mesh.userData.flipAngle = mesh.userData.isFlipped ? Math.PI : 0;
         } else {
-          // Tap new image -> Kinetic wave first, then slide into focus
-          const cardMesh = cardMeshList[index];
-          triggerShockwave(cardMesh.position.x, cardMesh.position.y);
-
-          if (delayedFocusTimeout) clearTimeout(delayedFocusTimeout);
-          delayedFocusTimeout = setTimeout(() => {
-            focusOnIndex(index);
-          }, 240);
+          // Shockwave animation first, then glide into focus
+          setTimeout(() => focusOnIndex(hitIndex), 160);
         }
-      } else if (focusedIndex !== -1) {
-        unfocus();
+      } else {
+        // Tapped canvas: Trigger shockwave
+        if (raycaster.ray.intersectPlane(groundPlane, groundHit)) {
+          triggerShockwave(groundHit.x, groundHit.y);
+        }
+        if (focusedIndex !== -1) unfocus();
       }
     }
 
@@ -912,24 +861,21 @@
       focusedIndex = index;
       uniforms.uFocusIndex.value = index;
       backBtn.classList.add('visible');
-
-      // Reset flip state on new focus
-      cardMeshList.forEach((mesh, idx) => {
-        if (idx !== index) mesh.userData.isFlipped = false;
-      });
     }
 
     function unfocus() {
       if (focusedIndex === -1) return;
-      cardMeshList.forEach(m => m.userData.isFlipped = false);
+      // Reset flip
+      if (cardData[focusedIndex]) {
+        const mesh = cardData[focusedIndex].mesh;
+        mesh.userData.isFlipped = false;
+        mesh.userData.flipAngle = 0;
+      }
       focusedIndex = -1;
       backBtn.classList.remove('visible');
     }
 
-    backBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      unfocus();
-    });
+    backBtn.addEventListener('click', (e) => { e.stopPropagation(); unfocus(); });
 
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth / window.innerHeight;
@@ -946,88 +892,61 @@
       const elapsedTime = clock.getElapsedTime();
       uniforms.uTime.value = elapsedTime;
 
-      // Shockwave Propagation
-      if (shockIntensity > 0.005) {
-        shockRadius += 4.5;
-        shockIntensity *= 0.965;
-        uniforms.uShockRadius.value = shockRadius;
-        uniforms.uShockIntensity.value = shockIntensity;
-      } else {
-        uniforms.uShockIntensity.value = 0.0;
+      // Calculate Shockwave Time
+      if (shockStartTime > 0) {
+        uniforms.uShockTime.value = elapsedTime - shockStartTime;
       }
 
-      // WASD Flight
+      // Smooth Morphing of Dome Strength (1.0 in Dome, 0.0 in Helix/Ring)
+      const targetDome = (currentMode === 0) ? 1.0 : 0.0;
+      uniforms.uDomeStrength.value += (targetDome - uniforms.uDomeStrength.value) * 0.06;
+
+      // Smooth Position Morphing for Formations
+      cardMeshList.forEach((mesh, idx) => {
+        mesh.position.lerp(mesh.userData.targetPos, 0.07);
+        const tMesh = cardData[idx].textMesh;
+        tMesh.position.lerp(tMesh.userData.targetPos, 0.07);
+
+        // Magnetic Tilt + 3D Flip
+        const targetFlip = mesh.userData.flipAngle || 0;
+        mesh.rotation.y += ((targetFlip + (mesh.userData.targetRotY || 0)) - mesh.rotation.y) * 0.1;
+        mesh.rotation.x += ((mesh.userData.targetRotX || 0) - mesh.rotation.x) * 0.1;
+      });
+
+      // Flight Navigation
       if (focusedIndex === -1) {
-        const flySpeed = (isSprinting ? 1.6 : 0.65);
+        const flySpeed = isSprinting ? 1.35 : 0.55;
         if (keysDown['KeyW'] || keysDown['ArrowUp']) targetPan.y += flySpeed;
         if (keysDown['KeyS'] || keysDown['ArrowDown']) targetPan.y -= flySpeed;
         if (keysDown['KeyA'] || keysDown['ArrowLeft']) targetPan.x -= flySpeed;
         if (keysDown['KeyD'] || keysDown['ArrowRight']) targetPan.x += flySpeed;
       }
 
+      // Smooth Damping
       panOffset.x += (targetPan.x - panOffset.x) * 0.08;
       panOffset.y += (targetPan.y - panOffset.y) * 0.08;
       zoom += (targetZoom - zoom) * 0.08;
 
-      // Warp FOV Shift
+      // Shift Warp Effect
       const targetFOV = isSprinting ? 65 : 55;
       camera.fov += (targetFOV - camera.fov) * 0.08;
       camera.updateProjectionMatrix();
-      particleUniforms.uSpeedWarp.value += ((isSprinting ? 1.0 : 0.0) - particleUniforms.uSpeedWarp.value) * 0.08;
-
-      // Smooth Morphing Between Formations
-      cardMeshList.forEach((mesh, idx) => {
-        let tPos, tRot;
-        if (currentFormation === 0) {
-          tPos = mesh.userData.posDome;
-          tRot = mesh.userData.posDome;
-        } else if (currentFormation === 1) {
-          tPos = mesh.userData.posHelix;
-          tRot = mesh.userData.posHelix;
-        } else {
-          tPos = mesh.userData.posRing;
-          tRot = mesh.userData.posRing;
-        }
-
-        // Lerp position
-        mesh.position.x += (tPos.x - mesh.position.x) * 0.07;
-        mesh.position.y += (tPos.y - mesh.position.y) * 0.07;
-        mesh.position.z += (tPos.z - mesh.position.z) * 0.07;
-
-        // 3D Card Flip Angle
-        const targetFlipAngle = mesh.userData.isFlipped ? Math.PI : 0.0;
-        mesh.userData.currentFlip = THREE.MathUtils.lerp(mesh.userData.currentFlip, targetFlipAngle, 0.1);
-
-        // Magnetic Tilt + Flip
-        const hoverX = (focusedIndex === idx) ? 0 : (mesh.userData.targetRotX || 0);
-        const hoverY = (focusedIndex === idx) ? 0 : (mesh.userData.targetRotY || 0);
-
-        mesh.rotation.x += (tRot.rotX + hoverX - mesh.rotation.x) * 0.08;
-        mesh.rotation.y += (tRot.rotY + hoverY + mesh.userData.currentFlip - mesh.rotation.y) * 0.08;
-        mesh.rotation.z += (tRot.rotZ - mesh.rotation.z) * 0.08;
-
-        // Accompanying Text Mesh Follow
-        const tMesh = textMeshList[idx];
-        tMesh.position.x = mesh.position.x;
-        tMesh.position.y = mesh.position.y + tMesh.userData.yOffset;
-        tMesh.position.z = mesh.position.z;
-        tMesh.rotation.copy(mesh.rotation);
-        tMesh.rotation.y = tRot.rotY + hoverY; // Keep text readable
-        tMesh.material.uniforms.uSubAlpha.value = 1.0 - Math.min(1.0, mesh.userData.currentFlip * 1.2);
-      });
+      particleMat.uniforms.uSpeedWarp.value += ((isSprinting ? 1.0 : 0.0) - particleMat.uniforms.uSpeedWarp.value) * 0.08;
 
       if (focusedIndex !== -1) {
+        // Focus Framing with Curvature & Elevation
         focusProgress += (1.0 - focusProgress) * 0.08;
-        const targetMesh = cardMeshList[focusedIndex];
-        const focusDist = (targetMesh.userData.scale > 1.8) ? 14.5 : 8.8;
-        const targetDomeZ = getDomeZ(targetMesh.position.x, targetMesh.position.y);
-        const elevatedZ = targetMesh.position.z + targetDomeZ + 4.0;
+        const target = cardData[focusedIndex];
+        const focusDist = (target.scale > 1.8) ? 14.5 : 8.8;
+        const targetDomeZ = getDomeZ(target.mesh.position.x, target.mesh.position.y);
+        const elevatedZ = target.mesh.position.z + targetDomeZ + 4.5;
 
-        camera.position.x += (targetMesh.position.x - camera.position.x) * 0.08;
-        camera.position.y += ((targetMesh.position.y - 1.2) - camera.position.y) * 0.08;
+        camera.position.x += (target.mesh.position.x - camera.position.x) * 0.08;
+        camera.position.y += ((target.mesh.position.y - 1.2) - camera.position.y) * 0.08;
         camera.position.z += ((elevatedZ + focusDist) - camera.position.z) * 0.08;
-        camera.lookAt(targetMesh.position.x, targetMesh.position.y - 1.2, elevatedZ);
+        camera.lookAt(target.mesh.position.x, target.mesh.position.y - 1.2, elevatedZ);
       } else {
+        // Upright IMAX Curvature Viewport
         focusProgress += (0.0 - focusProgress) * 0.08;
 
         const domeBaseZ = getDomeZ(panOffset.x, panOffset.y);
@@ -1040,9 +959,7 @@
         camera.position.z += (defaultCamZ - camera.position.z) * 0.08;
         camera.lookAt(panOffset.x, panOffset.y + (zoom * 0.08), domeBaseZ);
 
-        if (focusProgress < 0.01) {
-          uniforms.uFocusIndex.value = -1.0;
-        }
+        if (focusProgress < 0.01) uniforms.uFocusIndex.value = -1.0;
       }
 
       uniforms.uFlattenProgress.value = focusProgress;
