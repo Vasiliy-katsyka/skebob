@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>SKEBOB // NON-EUCLIDEAN TOPOLOGY</title>
+  <title>SKEBOB</title>
   <style>
     * {
       box-sizing: border-box;
@@ -50,6 +50,7 @@
       letter-spacing: 0.12em;
       color: #777777;
       margin-top: 4px;
+      line-height: 1.5;
     }
     /* Return Button */
     .back-btn {
@@ -92,8 +93,8 @@
 </head>
 <body>
   <div class="hud">
-    <h1>SKEBOB // MULTIVERSE</h1>
-    <p>Drag to fly &bull; Zoom or pinch to explore &bull; Tap to snap</p>
+    <h1>SKEBOB</h1>
+    <p>WASD / Arrows to glide &bull; Shift for Warp &bull; Cursor wakes waves &bull; Tap to snap</p>
   </div>
   <button class="back-btn" id="backBtn">&larr; Return to Warp</button>
   <canvas id="webgl"></canvas>
@@ -104,8 +105,9 @@
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000);
 
+    // Standing / Monumental upright perspective
     const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.set(0, -22, 28);
+    camera.position.set(0, -8, 30);
     camera.lookAt(0, 0, 0);
 
     const renderer = new THREE.WebGLRenderer({
@@ -116,30 +118,40 @@
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
-    // Shared Shader Uniforms
+    // Shared Shader Uniforms (Wave, Cursor, & Focus State)
     const uniforms = {
       uTime: { value: 0.0 },
-      uWaveHeight: { value: 1.9 },
-      uWaveFreq: { value: 0.15 },
+      uWaveHeight: { value: 1.8 },
+      uWaveFreq: { value: 0.14 },
       uFocusIndex: { value: -1.0 },
-      uFlattenProgress: { value: 0.0 }
+      uFlattenProgress: { value: 0.0 },
+      uMouseWorld: { value: new THREE.Vector2(9999.0, 9999.0) },
+      uMouseStrength: { value: 0.0 }
     };
 
-    // Shared GLSL Wave Function
+    // Shared GLSL Wave Function with Cursor Ripple / Wake
     const waveFunctionGLSL = `
       uniform float uTime;
       uniform float uWaveHeight;
       uniform float uWaveFreq;
+      uniform vec2 uMouseWorld;
+      uniform float uMouseStrength;
       
       float getWave(vec2 pos) {
         float w1 = sin(pos.x * uWaveFreq + uTime * 0.75) * cos(pos.y * uWaveFreq * 0.8 + uTime * 0.55);
         float w2 = sin((pos.x + pos.y) * uWaveFreq * 0.6 + uTime * 0.4) * 0.5;
-        return (w1 + w2) * uWaveHeight;
+        float base = (w1 + w2) * uWaveHeight;
+
+        // Interactive cursor depression and shockwave ripple
+        float d = distance(pos, uMouseWorld);
+        float ripple = sin(d * 1.7 - uTime * 5.5) * exp(-d * 0.35) * 1.75 * uMouseStrength;
+
+        return base + ripple;
       }
     `;
 
     // --- 1. Infinite Non-Euclidean Grid ---
-    const gridGeo = new THREE.PlaneGeometry(240, 240, 200, 200);
+    const gridGeo = new THREE.PlaneGeometry(260, 260, 200, 200);
     const gridMat = new THREE.ShaderMaterial({
       uniforms: uniforms,
       vertexShader: `
@@ -160,7 +172,7 @@
           float c = 1.0 - min(line, 1.0);
 
           float dist = length(vWorldPos.xy);
-          float alpha = smoothstep(110.0, 30.0, dist) * c * 0.6;
+          float alpha = smoothstep(125.0, 35.0, dist) * c * 0.55;
           gl_FragColor = vec4(vec3(1.0), alpha);
         }
       `,
@@ -169,7 +181,87 @@
     const gridMesh = new THREE.Mesh(gridGeo, gridMat);
     scene.add(gridMesh);
 
-    // --- 2. Canvas Texture Helper for Titles ---
+    // --- 2. Floating Cosmic Dust & Warp Speed Particles ---
+    const particleCount = 2200;
+    const particleGeo = new THREE.BufferGeometry();
+    const particlePos = new Float32Array(particleCount * 3);
+    const particleSizes = new Float32Array(particleCount);
+    const particleSeeds = new Float32Array(particleCount);
+
+    for (let i = 0; i < particleCount; i++) {
+      particlePos[i * 3 + 0] = (Math.random() - 0.5) * 220;
+      particlePos[i * 3 + 1] = (Math.random() - 0.5) * 220;
+      particlePos[i * 3 + 2] = (Math.random() - 0.25) * 45;
+      particleSizes[i] = Math.random() * 22.0 + 8.0;
+      particleSeeds[i] = Math.random() * 100.0;
+    }
+
+    particleGeo.setAttribute('position', new THREE.BufferAttribute(particlePos, 3));
+    particleGeo.setAttribute('aSize', new THREE.BufferAttribute(particleSizes, 1));
+    particleGeo.setAttribute('aSeed', new THREE.BufferAttribute(particleSeeds, 1));
+
+    // Soft glowing circle sprite generator
+    function createParticleTexture() {
+      const cvs = document.createElement('canvas');
+      cvs.width = 64;
+      cvs.height = 64;
+      const ctx = cvs.getContext('2d');
+      const grad = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+      grad.addColorStop(0, 'rgba(255,255,255,1)');
+      grad.addColorStop(0.3, 'rgba(255,255,255,0.7)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 64, 64);
+      return new THREE.CanvasTexture(cvs);
+    }
+
+    const particleUniforms = {
+      uTime: uniforms.uTime,
+      uTexture: { value: createParticleTexture() },
+      uSpeedWarp: { value: 0.0 }
+    };
+
+    const particleMat = new THREE.ShaderMaterial({
+      uniforms: particleUniforms,
+      vertexShader: `
+        uniform float uTime;
+        uniform float uSpeedWarp;
+        attribute float aSize;
+        attribute float aSeed;
+        varying float vAlpha;
+
+        void main() {
+          vec3 pos = position;
+          // Gentle floating wave drift
+          pos.z += sin(uTime * 0.8 + aSeed) * 0.8;
+          pos.x += cos(uTime * 0.4 + aSeed) * 0.5;
+
+          vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+          gl_Position = projectionMatrix * mvPosition;
+
+          // Twinkle & stretch effect under warp
+          float twinkle = sin(uTime * 2.0 + aSeed) * 0.35 + 0.65;
+          gl_PointSize = (aSize * twinkle * (1.0 + uSpeedWarp * 0.8)) * (15.0 / -mvPosition.z);
+          vAlpha = smoothstep(65.0, 5.0, -mvPosition.z) * 0.7;
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D uTexture;
+        varying float vAlpha;
+        void main() {
+          vec4 tex = texture2D(uTexture, gl_PointCoord);
+          gl_FragColor = vec4(tex.rgb, tex.a * vAlpha);
+        }
+      `,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+
+    const particleSystem = new THREE.Points(particleGeo, particleMat);
+    scene.add(particleSystem);
+
+    // --- 3. Canvas Texture Helper for Titles ---
     function makeTextTexture(title, desc) {
       const cvs = document.createElement('canvas');
       cvs.width = 1024;
@@ -177,14 +269,12 @@
       const ctx = cvs.getContext('2d');
       ctx.clearRect(0, 0, cvs.width, cvs.height);
 
-      // Title
       ctx.fillStyle = "#ffffff";
       ctx.font = "900 48px monospace";
       ctx.textAlign = "center";
       ctx.fillText(title.toUpperCase(), 512, 85);
 
-      // Description
-      ctx.fillStyle = "#8e8e93";
+      ctx.fillStyle = "#9a9aa0";
       ctx.font = "500 30px monospace";
       ctx.textAlign = "center";
       ctx.fillText(desc, 512, 160);
@@ -194,15 +284,15 @@
       return tex;
     }
 
-    // --- 3. Scatter Logic & Initialization ---
+    // --- 4. Scatter Logic & Card Initialization ---
     const interactiveObjects = [];
+    const cardMeshList = [];
     const cardData = [];
     const cardGroup = new THREE.Group();
     scene.add(cardGroup);
 
     const texLoader = new THREE.TextureLoader();
 
-    // Spiral/organic scatter distribution helper
     function getOrganicPositions(count, minDistance = 14.5) {
       const positions = [{ x: 0, y: 0, scale: 2.4, isHero: true }];
       let currentRadius = 16.0;
@@ -219,7 +309,6 @@
           const x = Math.cos(angle) * (currentRadius + jitter);
           const y = Math.sin(angle) * (currentRadius + jitter);
 
-          // Check distance against already placed items
           const tooClose = positions.some(p => Math.hypot(p.x - x, p.y - y) < minDistance);
           if (!tooClose) {
             positions.push({
@@ -236,14 +325,12 @@
       return positions;
     }
 
-    // Fetch list.json
     fetch('list.json')
       .then(res => res.json())
       .then(data => initGallery(data))
       .catch(err => console.error("Error loading list.json:", err));
 
     function initGallery(items) {
-      // Find original-skebob.jpg to place as Hero
       let heroIndex = items.findIndex(item => item.src.includes('original-skebob.jpg'));
       if (heroIndex > -1) {
         const [hero] = items.splice(heroIndex, 1);
@@ -280,11 +367,13 @@
               vec4 worldPos = modelMatrix * vec4(pos, 1.0);
 
               float waveZ = getWave(worldPos.xy);
+              // Elevate card significantly on focus to clear any wave crests
               if (abs(uIndex - uFocusIndex) < 0.1) {
                 waveZ = mix(waveZ, 0.0, uFlattenProgress);
+                worldPos.z += uFlattenProgress * 4.0;
               }
 
-              worldPos.z += waveZ + 0.06;
+              worldPos.z += waveZ + 0.12;
               gl_Position = projectionMatrix * viewMatrix * worldPos;
             }
           `,
@@ -305,11 +394,21 @@
         const cardMesh = new THREE.Mesh(cardGeo, cardMat);
         cardMesh.position.set(pos.x, pos.y, 0);
         if (pos.rot) cardMesh.rotation.z = pos.rot;
-        cardMesh.userData = { index, x: pos.x, y: pos.y, scale: pos.scale, item };
+        cardMesh.userData = {
+          index,
+          x: pos.x,
+          y: pos.y,
+          scale: pos.scale,
+          item,
+          baseRotZ: pos.rot || 0,
+          targetRotX: 0,
+          targetRotY: 0
+        };
         cardGroup.add(cardMesh);
         interactiveObjects.push(cardMesh);
+        cardMeshList.push(cardMesh);
 
-        // Subtitle Mesh
+        // Subtitle Mesh - Elevated higher on Z so waves never clip it
         const textH = 1.35 * pos.scale;
         const textGeo = new THREE.PlaneGeometry(baseW * 1.3, textH, 24, 8);
         const textTex = makeTextTexture(item.title || "Skebob", item.description || "");
@@ -333,11 +432,14 @@
               vec4 worldPos = modelMatrix * vec4(pos, 1.0);
 
               float waveZ = getWave(worldPos.xy);
+              // Elevate together with the parent card
               if (abs(uIndex - uFocusIndex) < 0.1) {
                 waveZ = mix(waveZ, 0.0, uFlattenProgress);
+                worldPos.z += uFlattenProgress * 4.0;
               }
 
-              worldPos.z += waveZ + 0.08;
+              // Extra Z-bias (+0.30) guarantees it stays in front of the grid & card
+              worldPos.z += waveZ + 0.30;
               gl_Position = projectionMatrix * viewMatrix * worldPos;
             }
           `,
@@ -364,7 +466,7 @@
       });
     }
 
-    // --- 4. Controls & Touch Navigation Rig ---
+    // --- 5. Controls, Keyboard Flight & Interactive Rig ---
     let isDragging = false;
     let dragStartPos = { x: 0, y: 0 };
     let prevPointer = { x: 0, y: 0 };
@@ -379,14 +481,50 @@
     let focusProgress = 0.0;
     const backBtn = document.getElementById('backBtn');
 
-    // Desktop Mouse Events
-    window.addEventListener('mousedown', (e) => {
-      isDragging = true;
-      dragStartPos = { x: e.clientX, y: e.clientY };
-      prevPointer = { x: e.clientX, y: e.clientY };
+    // Raycasting plane for cursor ripples
+    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+    const groundRaycaster = new THREE.Raycaster();
+    const groundHit = new THREE.Vector3();
+    const pointer = new THREE.Vector2(-999, -999);
+    let hoveredCard = null;
+
+    // Keyboard Flight Controls State
+    const keysDown = {};
+    let isSprinting = false;
+
+    window.addEventListener('keydown', (e) => {
+      keysDown[e.code] = true;
+      if (e.shiftKey) isSprinting = true;
+
+      // Idea 5: Quick-Cycle Keyboard Carousel in Focus Mode
+      if (focusedIndex !== -1 && cardData.length > 0) {
+        if (e.code === 'KeyD' || e.code === 'ArrowRight') {
+          focusOnIndex((focusedIndex + 1) % cardData.length);
+        } else if (e.code === 'KeyA' || e.code === 'ArrowLeft') {
+          focusOnIndex((focusedIndex - 1 + cardData.length) % cardData.length);
+        }
+      }
+
+      if (e.key === 'Escape') unfocus();
     });
 
+    window.addEventListener('keyup', (e) => {
+      keysDown[e.code] = false;
+      if (!e.shiftKey) isSprinting = false;
+    });
+
+    // Mouse & Cursor Wave Disturbance
     window.addEventListener('mousemove', (e) => {
+      pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
+      pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
+
+      groundRaycaster.setFromCamera(pointer, camera);
+      if (groundRaycaster.ray.intersectPlane(groundPlane, groundHit)) {
+        uniforms.uMouseWorld.value.set(groundHit.x, groundHit.y);
+        uniforms.uMouseStrength.value = 1.0;
+      }
+
+      // Drag Pan
       if (isDragging) {
         const dx = (e.clientX - prevPointer.x) * 0.04;
         const dy = (e.clientY - prevPointer.y) * 0.04;
@@ -394,14 +532,39 @@
         targetPan.y += dy;
         prevPointer = { x: e.clientX, y: e.clientY };
       }
+
+      // Idea 1: Magnetic Card Parallax Tilt on Hover
+      if (!isDragging && focusedIndex === -1) {
+        const cardHits = groundRaycaster.intersectObjects(cardMeshList);
+        if (cardHits.length > 0) {
+          const hitMesh = cardHits[0].object;
+          hoveredCard = hitMesh;
+          const localHit = hitMesh.worldToLocal(cardHits[0].point.clone());
+          hitMesh.userData.targetRotY = (localHit.x / (hitMesh.geometry.parameters.width * 0.5)) * 0.28;
+          hitMesh.userData.targetRotX = -(localHit.y / (hitMesh.geometry.parameters.height * 0.5)) * 0.28;
+        } else if (hoveredCard) {
+          hoveredCard.userData.targetRotX = 0;
+          hoveredCard.userData.targetRotY = 0;
+          hoveredCard = null;
+        }
+      }
+    });
+
+    window.addEventListener('mouseleave', () => {
+      uniforms.uMouseStrength.value = 0.0;
+    });
+
+    window.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      dragStartPos = { x: e.clientX, y: e.clientY };
+      prevPointer = { x: e.clientX, y: e.clientY };
     });
 
     window.addEventListener('mouseup', () => { isDragging = false; });
 
-    // Desktop Wheel Zoom + Unfocus on Zoom Out
+    // Desktop Wheel Zoom
     window.addEventListener('wheel', (e) => {
       if (focusedIndex !== -1 && e.deltaY > 20) {
-        // Zoom out immediately returns to warp
         unfocus();
         return;
       }
@@ -438,7 +601,6 @@
         );
         const diff = initialPinchDist - currentDist;
 
-        // Pinching out while focused exits back to orbit
         if (focusedIndex !== -1 && diff > 25) {
           unfocus();
           initialPinchDist = currentDist;
@@ -459,20 +621,16 @@
     });
 
     // Raycasting & Tap to Snap
-    const raycaster = new THREE.Raycaster();
-    const pointer = new THREE.Vector2();
-
+    const clickRaycaster = new THREE.Raycaster();
     function handleTap(clientX, clientY) {
       pointer.x = (clientX / window.innerWidth) * 2 - 1;
       pointer.y = -(clientY / window.innerHeight) * 2 + 1;
-      raycaster.setFromCamera(pointer, camera);
+      clickRaycaster.setFromCamera(pointer, camera);
 
-      const intersects = raycaster.intersectObjects(interactiveObjects);
+      const intersects = clickRaycaster.intersectObjects(interactiveObjects);
       if (intersects.length > 0) {
-        const hit = intersects[0].object;
-        focusOnIndex(hit.userData.index);
+        focusOnIndex(intersects[0].object.userData.index);
       } else if (focusedIndex !== -1) {
-        // Tapping background un-focuses
         unfocus();
       }
     }
@@ -500,10 +658,6 @@
       unfocus();
     });
 
-    window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') unfocus();
-    });
-
     // Resize Handler
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth / window.innerHeight;
@@ -511,7 +665,7 @@
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
-    // --- 5. Main Render Loop ---
+    // --- 6. Main Render Loop ---
     const clock = new THREE.Clock();
 
     function animate() {
@@ -520,33 +674,57 @@
       const elapsedTime = clock.getElapsedTime();
       uniforms.uTime.value = elapsedTime;
 
-      // Smooth camera pan and zoom interpolation
+      // WASD / Arrow Navigation Physics
+      if (focusedIndex === -1) {
+        const flySpeed = (isSprinting ? 1.3 : 0.55);
+        if (keysDown['KeyW'] || keysDown['ArrowUp']) targetPan.y += flySpeed;
+        if (keysDown['KeyS'] || keysDown['ArrowDown']) targetPan.y -= flySpeed;
+        if (keysDown['KeyA'] || keysDown['ArrowLeft']) targetPan.x -= flySpeed;
+        if (keysDown['KeyD'] || keysDown['ArrowRight']) targetPan.x += flySpeed;
+      }
+
+      // Smooth pan and zoom damping
       panOffset.x += (targetPan.x - panOffset.x) * 0.08;
       panOffset.y += (targetPan.y - panOffset.y) * 0.08;
       zoom += (targetZoom - zoom) * 0.08;
 
+      // Idea 2: Hyperspace warp effect on shift
+      const targetFOV = isSprinting ? 64 : 55;
+      camera.fov += (targetFOV - camera.fov) * 0.08;
+      camera.updateProjectionMatrix();
+      particleUniforms.uSpeedWarp.value += ((isSprinting ? 1.0 : 0.0) - particleUniforms.uSpeedWarp.value) * 0.08;
+
+      // Magnetic Card Tilt Smoothing
+      cardMeshList.forEach(mesh => {
+        const tx = (focusedIndex === mesh.userData.index) ? 0 : (mesh.userData.targetRotX || 0);
+        const ty = (focusedIndex === mesh.userData.index) ? 0 : (mesh.userData.targetRotY || 0);
+        mesh.rotation.x += (tx - mesh.rotation.x) * 0.1;
+        mesh.rotation.y += (ty - mesh.rotation.y) * 0.1;
+      });
+
       if (focusedIndex !== -1) {
-        // Smoothly approach 1.0 (flat state)
+        // Flattening & Elevated Snap Focus
         focusProgress += (1.0 - focusProgress) * 0.08;
         const target = cardData[focusedIndex];
         const focusZ = (target.scale > 1.8) ? 14.5 : 8.5;
+        const elevatedZ = 4.0; // Matches shader Z elevation
 
         camera.position.x += (target.x - camera.position.x) * 0.08;
         camera.position.y += ((target.y - 1.2) - camera.position.y) * 0.08;
-        camera.position.z += (focusZ - camera.position.z) * 0.08;
-        camera.lookAt(target.x, target.y - 1.2, 0);
+        camera.position.z += ((elevatedZ + focusZ) - camera.position.z) * 0.08;
+        camera.lookAt(target.x, target.y - 1.2, elevatedZ);
       } else {
-        // Smooth return to wavy orbit
+        // Upright & Imposing Cyber-Gallery Perspective
         focusProgress += (0.0 - focusProgress) * 0.08;
 
         const defaultCamX = panOffset.x;
-        const defaultCamY = panOffset.y - (zoom * 0.75);
-        const defaultCamZ = zoom * 0.85;
+        const defaultCamY = panOffset.y - (zoom * 0.28); // Less tilt = upright monumental wall
+        const defaultCamZ = zoom * 0.95;
 
         camera.position.x += (defaultCamX - camera.position.x) * 0.08;
         camera.position.y += (defaultCamY - camera.position.y) * 0.08;
         camera.position.z += (defaultCamZ - camera.position.z) * 0.08;
-        camera.lookAt(panOffset.x, panOffset.y, 0);
+        camera.lookAt(panOffset.x, panOffset.y + (zoom * 0.08), 0);
 
         if (focusProgress < 0.01) {
           uniforms.uFocusIndex.value = -1.0;
