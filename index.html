@@ -105,9 +105,8 @@
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000);
 
-    // Standing / Monumental upright perspective
     const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.set(0, -8, 30);
+    camera.position.set(0, -6, 32);
     camera.lookAt(0, 0, 0);
 
     const renderer = new THREE.WebGLRenderer({
@@ -118,7 +117,7 @@
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
-    // Shared Shader Uniforms (Wave, Cursor, & Focus State)
+    // Shared Shader Uniforms
     const uniforms = {
       uTime: { value: 0.0 },
       uWaveHeight: { value: 1.8 },
@@ -129,37 +128,52 @@
       uMouseStrength: { value: 0.0 }
     };
 
-    // Shared GLSL Wave Function with Cursor Ripple / Wake
-    const waveFunctionGLSL = `
+    // Shared GLSL: IMAX Spherical Dome Warp + Cursor Dynamic Ripples
+    const sphereDomeGLSL = `
       uniform float uTime;
       uniform float uWaveHeight;
       uniform float uWaveFreq;
       uniform vec2 uMouseWorld;
       uniform float uMouseStrength;
       
+      // Inside-of-Sphere IMAX Bowl Curvature
+      float getDome(vec2 pos) {
+        float r2 = dot(pos, pos);
+        float R = 190.0;
+        float R2 = R * R;
+        return R - sqrt(max(R2 - min(r2, R2 - 1.0), 0.0));
+      }
+
       float getWave(vec2 pos) {
         float w1 = sin(pos.x * uWaveFreq + uTime * 0.75) * cos(pos.y * uWaveFreq * 0.8 + uTime * 0.55);
         float w2 = sin((pos.x + pos.y) * uWaveFreq * 0.6 + uTime * 0.4) * 0.5;
         float base = (w1 + w2) * uWaveHeight;
 
-        // Interactive cursor depression and shockwave ripple
+        // Dynamic cursor ripple wake
         float d = distance(pos, uMouseWorld);
-        float ripple = sin(d * 1.7 - uTime * 5.5) * exp(-d * 0.35) * 1.75 * uMouseStrength;
+        float ripple = sin(d * 1.7 - uTime * 5.5) * exp(-d * 0.35) * 1.8 * uMouseStrength;
 
         return base + ripple;
       }
     `;
 
-    // --- 1. Infinite Non-Euclidean Grid ---
-    const gridGeo = new THREE.PlaneGeometry(260, 260, 200, 200);
+    // CPU counterpart for camera framing
+    function getDomeZ(x, y) {
+      const r2 = x * x + y * y;
+      const R = 190.0;
+      return R - Math.sqrt(Math.max(R * R - Math.min(r2, R * R - 1), 0));
+    }
+
+    // --- 1. IMAX Spherical Curved Grid ---
+    const gridGeo = new THREE.PlaneGeometry(280, 280, 220, 220);
     const gridMat = new THREE.ShaderMaterial({
       uniforms: uniforms,
       vertexShader: `
-        ${waveFunctionGLSL}
+        ${sphereDomeGLSL}
         varying vec3 vWorldPos;
         void main() {
           vec3 pos = position;
-          pos.z += getWave(pos.xy);
+          pos.z += getDome(pos.xy) + getWave(pos.xy);
           vWorldPos = pos;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
         }
@@ -172,7 +186,7 @@
           float c = 1.0 - min(line, 1.0);
 
           float dist = length(vWorldPos.xy);
-          float alpha = smoothstep(125.0, 35.0, dist) * c * 0.55;
+          float alpha = smoothstep(135.0, 35.0, dist) * c * 0.55;
           gl_FragColor = vec4(vec3(1.0), alpha);
         }
       `,
@@ -181,7 +195,7 @@
     const gridMesh = new THREE.Mesh(gridGeo, gridMat);
     scene.add(gridMesh);
 
-    // --- 2. Floating Cosmic Dust & Warp Speed Particles ---
+    // --- 2. Floating Cosmic Particles in the IMAX Dome ---
     const particleCount = 2200;
     const particleGeo = new THREE.BufferGeometry();
     const particlePos = new Float32Array(particleCount * 3);
@@ -189,10 +203,10 @@
     const particleSeeds = new Float32Array(particleCount);
 
     for (let i = 0; i < particleCount; i++) {
-      particlePos[i * 3 + 0] = (Math.random() - 0.5) * 220;
-      particlePos[i * 3 + 1] = (Math.random() - 0.5) * 220;
-      particlePos[i * 3 + 2] = (Math.random() - 0.25) * 45;
-      particleSizes[i] = Math.random() * 22.0 + 8.0;
+      particlePos[i * 3 + 0] = (Math.random() - 0.5) * 230;
+      particlePos[i * 3 + 1] = (Math.random() - 0.5) * 230;
+      particlePos[i * 3 + 2] = (Math.random() - 0.25) * 35;
+      particleSizes[i] = Math.random() * 20.0 + 8.0;
       particleSeeds[i] = Math.random() * 100.0;
     }
 
@@ -200,7 +214,6 @@
     particleGeo.setAttribute('aSize', new THREE.BufferAttribute(particleSizes, 1));
     particleGeo.setAttribute('aSeed', new THREE.BufferAttribute(particleSeeds, 1));
 
-    // Soft glowing circle sprite generator
     function createParticleTexture() {
       const cvs = document.createElement('canvas');
       cvs.width = 64;
@@ -224,6 +237,7 @@
     const particleMat = new THREE.ShaderMaterial({
       uniforms: particleUniforms,
       vertexShader: `
+        ${sphereDomeGLSL}
         uniform float uTime;
         uniform float uSpeedWarp;
         attribute float aSize;
@@ -232,17 +246,16 @@
 
         void main() {
           vec3 pos = position;
-          // Gentle floating wave drift
+          pos.z += getDome(pos.xy);
           pos.z += sin(uTime * 0.8 + aSeed) * 0.8;
           pos.x += cos(uTime * 0.4 + aSeed) * 0.5;
 
           vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
           gl_Position = projectionMatrix * mvPosition;
 
-          // Twinkle & stretch effect under warp
           float twinkle = sin(uTime * 2.0 + aSeed) * 0.35 + 0.65;
-          gl_PointSize = (aSize * twinkle * (1.0 + uSpeedWarp * 0.8)) * (15.0 / -mvPosition.z);
-          vAlpha = smoothstep(65.0, 5.0, -mvPosition.z) * 0.7;
+          gl_PointSize = (aSize * twinkle * (1.0 + uSpeedWarp * 0.85)) * (15.0 / -mvPosition.z);
+          vAlpha = smoothstep(70.0, 5.0, -mvPosition.z) * 0.7;
         }
       `,
       fragmentShader: `
@@ -274,7 +287,7 @@
       ctx.textAlign = "center";
       ctx.fillText(title.toUpperCase(), 512, 85);
 
-      ctx.fillStyle = "#9a9aa0";
+      ctx.fillStyle = "#a2a2a8";
       ctx.font = "500 30px monospace";
       ctx.textAlign = "center";
       ctx.fillText(desc, 512, 160);
@@ -344,7 +357,7 @@
         const baseW = 5.2 * pos.scale;
         const baseH = 5.2 * pos.scale;
 
-        // Card Mesh
+        // Card Mesh (Subdivided so it bends smoothly along the sphere)
         const cardGeo = new THREE.PlaneGeometry(baseW, baseH, 32, 32);
         const texture = texLoader.load(item.src);
 
@@ -355,7 +368,7 @@
             uIndex: { value: index }
           },
           vertexShader: `
-            ${waveFunctionGLSL}
+            ${sphereDomeGLSL}
             uniform float uIndex;
             uniform float uFocusIndex;
             uniform float uFlattenProgress;
@@ -366,28 +379,44 @@
               vec3 pos = position;
               vec4 worldPos = modelMatrix * vec4(pos, 1.0);
 
+              float domeZ = getDome(worldPos.xy);
               float waveZ = getWave(worldPos.xy);
-              // Elevate card significantly on focus to clear any wave crests
+
+              // Elevate and calm wave when focused
               if (abs(uIndex - uFocusIndex) < 0.1) {
                 waveZ = mix(waveZ, 0.0, uFlattenProgress);
                 worldPos.z += uFlattenProgress * 4.0;
               }
 
-              worldPos.z += waveZ + 0.12;
+              worldPos.z += domeZ + waveZ + 0.12;
               gl_Position = projectionMatrix * viewMatrix * worldPos;
             }
           `,
           fragmentShader: `
             uniform sampler2D uTexture;
             varying vec2 vUv;
+
             void main() {
               vec4 tex = texture2D(uTexture, vUv);
-              float border = step(0.012, vUv.x) * step(0.012, vUv.y) * 
-                             step(vUv.x, 0.988) * step(vUv.y, 0.988);
-              vec3 col = mix(vec3(1.0), tex.rgb, border);
-              gl_FragColor = vec4(col, 1.0);
+
+              // Borderless: smooth feathered edge fade
+              float edge = smoothstep(0.0, 0.045, vUv.x) * smoothstep(1.0, 0.955, vUv.x) *
+                           smoothstep(0.0, 0.045, vUv.y) * smoothstep(1.0, 0.955, vUv.y);
+
+              // Smooth ethereal white light gradient radiating from top-right and bottom-left corners
+              float light1 = smoothstep(0.55, 0.0, distance(vUv, vec2(1.0, 1.0))) * 0.70;
+              float light2 = smoothstep(0.35, 0.0, distance(vUv, vec2(0.0, 0.0))) * 0.40;
+              float totalLight = light1 + light2;
+
+              // Blend image with the soft corner lighting
+              vec3 col = tex.rgb + vec3(1.0) * totalLight;
+              float alpha = clamp(edge * (0.92 + totalLight * 0.45), 0.0, 1.0);
+
+              gl_FragColor = vec4(col, alpha);
             }
           `,
+          transparent: true,
+          alphaTest: 0.01,
           side: THREE.DoubleSide
         });
 
@@ -420,7 +449,7 @@
             uIndex: { value: index }
           },
           vertexShader: `
-            ${waveFunctionGLSL}
+            ${sphereDomeGLSL}
             uniform float uIndex;
             uniform float uFocusIndex;
             uniform float uFlattenProgress;
@@ -431,15 +460,16 @@
               vec3 pos = position;
               vec4 worldPos = modelMatrix * vec4(pos, 1.0);
 
+              float domeZ = getDome(worldPos.xy);
               float waveZ = getWave(worldPos.xy);
-              // Elevate together with the parent card
+
               if (abs(uIndex - uFocusIndex) < 0.1) {
                 waveZ = mix(waveZ, 0.0, uFlattenProgress);
                 worldPos.z += uFlattenProgress * 4.0;
               }
 
-              // Extra Z-bias (+0.30) guarantees it stays in front of the grid & card
-              worldPos.z += waveZ + 0.30;
+              // Extra Z elevation (+0.35) ensures typography remains clear and crisp
+              worldPos.z += domeZ + waveZ + 0.35;
               gl_Position = projectionMatrix * viewMatrix * worldPos;
             }
           `,
@@ -473,15 +503,15 @@
     let targetPan = { x: 0, y: 0 };
     let panOffset = { x: 0, y: 0 };
     
-    let targetZoom = 30.0;
-    let zoom = 30.0;
+    let targetZoom = 32.0;
+    let zoom = 32.0;
     let initialPinchDist = null;
 
     let focusedIndex = -1;
     let focusProgress = 0.0;
     const backBtn = document.getElementById('backBtn');
 
-    // Raycasting plane for cursor ripples
+    // Raycast ground plane for cursor wave reaction
     const groundPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
     const groundRaycaster = new THREE.Raycaster();
     const groundHit = new THREE.Vector3();
@@ -496,7 +526,7 @@
       keysDown[e.code] = true;
       if (e.shiftKey) isSprinting = true;
 
-      // Idea 5: Quick-Cycle Keyboard Carousel in Focus Mode
+      // Quick-Cycle Carousel in Focus Mode
       if (focusedIndex !== -1 && cardData.length > 0) {
         if (e.code === 'KeyD' || e.code === 'ArrowRight') {
           focusOnIndex((focusedIndex + 1) % cardData.length);
@@ -524,7 +554,6 @@
         uniforms.uMouseStrength.value = 1.0;
       }
 
-      // Drag Pan
       if (isDragging) {
         const dx = (e.clientX - prevPointer.x) * 0.04;
         const dy = (e.clientY - prevPointer.y) * 0.04;
@@ -533,7 +562,7 @@
         prevPointer = { x: e.clientX, y: e.clientY };
       }
 
-      // Idea 1: Magnetic Card Parallax Tilt on Hover
+      // Magnetic Card Parallax Tilt on Hover
       if (!isDragging && focusedIndex === -1) {
         const cardHits = groundRaycaster.intersectObjects(cardMeshList);
         if (cardHits.length > 0) {
@@ -658,7 +687,6 @@
       unfocus();
     });
 
-    // Resize Handler
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
@@ -674,7 +702,7 @@
       const elapsedTime = clock.getElapsedTime();
       uniforms.uTime.value = elapsedTime;
 
-      // WASD / Arrow Navigation Physics
+      // WASD / Arrow Keys Flight
       if (focusedIndex === -1) {
         const flySpeed = (isSprinting ? 1.3 : 0.55);
         if (keysDown['KeyW'] || keysDown['ArrowUp']) targetPan.y += flySpeed;
@@ -688,7 +716,7 @@
       panOffset.y += (targetPan.y - panOffset.y) * 0.08;
       zoom += (targetZoom - zoom) * 0.08;
 
-      // Idea 2: Hyperspace warp effect on shift
+      // Hyperspace Warp FOV Expansion on Shift
       const targetFOV = isSprinting ? 64 : 55;
       camera.fov += (targetFOV - camera.fov) * 0.08;
       camera.updateProjectionMatrix();
@@ -703,28 +731,30 @@
       });
 
       if (focusedIndex !== -1) {
-        // Flattening & Elevated Snap Focus
+        // Curved Dome Snapping & Forward Elevation (+4.0)
         focusProgress += (1.0 - focusProgress) * 0.08;
         const target = cardData[focusedIndex];
-        const focusZ = (target.scale > 1.8) ? 14.5 : 8.5;
-        const elevatedZ = 4.0; // Matches shader Z elevation
+        const focusDist = (target.scale > 1.8) ? 14.5 : 8.8;
+        const targetDomeZ = getDomeZ(target.x, target.y);
+        const elevatedZ = targetDomeZ + 4.0;
 
         camera.position.x += (target.x - camera.position.x) * 0.08;
         camera.position.y += ((target.y - 1.2) - camera.position.y) * 0.08;
-        camera.position.z += ((elevatedZ + focusZ) - camera.position.z) * 0.08;
+        camera.position.z += ((elevatedZ + focusDist) - camera.position.z) * 0.08;
         camera.lookAt(target.x, target.y - 1.2, elevatedZ);
       } else {
-        // Upright & Imposing Cyber-Gallery Perspective
+        // IMAX Dome Viewport (Wraps around peripheral vision)
         focusProgress += (0.0 - focusProgress) * 0.08;
 
+        const domeBaseZ = getDomeZ(panOffset.x, panOffset.y);
         const defaultCamX = panOffset.x;
-        const defaultCamY = panOffset.y - (zoom * 0.28); // Less tilt = upright monumental wall
-        const defaultCamZ = zoom * 0.95;
+        const defaultCamY = panOffset.y - (zoom * 0.22);
+        const defaultCamZ = domeBaseZ + (zoom * 0.95);
 
         camera.position.x += (defaultCamX - camera.position.x) * 0.08;
         camera.position.y += (defaultCamY - camera.position.y) * 0.08;
         camera.position.z += (defaultCamZ - camera.position.z) * 0.08;
-        camera.lookAt(panOffset.x, panOffset.y + (zoom * 0.08), 0);
+        camera.lookAt(panOffset.x, panOffset.y + (zoom * 0.08), domeBaseZ);
 
         if (focusProgress < 0.01) {
           uniforms.uFocusIndex.value = -1.0;
